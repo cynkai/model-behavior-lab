@@ -39,6 +39,7 @@ from mblab.formatting import (
     seconds,
     tokens,
 )
+from mblab.pilot import PILOT_BANNER
 from mblab.records import build_record, condition_instructions, next_pending
 from mblab.report import scoring_text
 from mblab.stats import Interval
@@ -95,6 +96,8 @@ def _chart(chart, table: pd.DataFrame, caption: str | None = None) -> None:
 def _banner(a: Analysis) -> None:
     if a.synthetic:
         st.error(f"**{DEMO_BANNER}**", icon="⚠️")
+    if a.definition.pilot:
+        st.warning(f"**{PILOT_BANNER}**", icon="🧪")
 
 
 # -- pages ---------------------------------------------------------------------------------

@@ -39,6 +39,7 @@ from mblab.formatting import (
     tokens,
 )
 from mblab.grading import export_blind_sheet, import_blind_sheet
+from mblab.pilot import PILOT_BANNER, create_pilot_study, displayed_labels
 from mblab.plan import generate_plan
 from mblab.records import build_record, condition_instructions, next_pending
 from mblab.report import render_report
@@ -220,6 +221,72 @@ def init(
 
 @app.command()
 @_errors
+def pilot(
+    study: StudyOpt = Path("."),
+    out: Annotated[
+        Path | None, typer.Option(help="Pilot study directory (default: <study>-pilot).")
+    ] = None,
+    repetitions: Annotated[
+        int, typer.Option(min=1, max=100, help="Repetitions in the pilot (one block = 1).")
+    ] = 1,
+    force: Annotated[bool, typer.Option(help="Write into a non-empty directory.")] = False,
+) -> None:
+    """Create a separate pilot study from a study's definition, to try the protocol first."""
+    s, target = create_pilot_study(study, out, repetitions, force)
+    console.print(f"[bold yellow]{PILOT_BANNER}[/]")
+    console.print(
+        f"Created {target}: {len(s.require_plan().runs)} runs "
+        f"({len(s.definition.conditions)} conditions x {len(s.definition.tasks)} tasks x "
+        f"{repetitions})."
+    )
+    console.print("Next steps:")
+    console.print(f"  1. Run it like the real study: mblab next -s {target} --copy / mblab record")
+    console.print(f"  2. mblab labels -s {target}   (every label the client displayed, verbatim)")
+    console.print(
+        f"  3. In {study / DEFINITION_FILE}, fix option labels and observed_label_aliases, "
+        "then plan the main study. Keep the pilot directory as a record of how they were chosen."
+    )
+
+
+@app.command()
+@_errors
+def labels(study: StudyOpt = Path(".")) -> None:
+    """List every model label the client displayed, verbatim, and which option it matches."""
+    s = Study.load(study)
+    if s.definition.execution_method != "manual_ui":
+        raise StudyError("displayed labels exist only in manual_ui studies")
+    items, none = displayed_labels(s)
+    if not s.definition.pilot and s.records:
+        err_console.print(
+            "[yellow]warning:[/] this is not a pilot study. Changing labels or aliases after "
+            "seeing this study's data is a post-hoc change; `mblab validate` will flag it. "
+            "Use `mblab pilot` to choose them before collecting."
+        )
+    if not items:
+        console.print(f"No displayed labels recorded ({none} run(s) without one).")
+        return
+    table = Table("label (verbatim)", "runs", "conditions", "where shown", "matches option")
+    for item in items:
+        table.add_row(
+            item.text,
+            str(item.runs),
+            ", ".join(f"{k} ({v})" for k, v in item.conditions.items()),
+            ", ".join(f"{k} ({v})" for k, v in item.locations.items()),
+            ", ".join(item.matches) or "none (not a label or alias yet)",
+        )
+    console.print(table)
+    console.print(f"{none} run(s) had no displayed label.")
+    unmatched = [i.text for i in items if not i.matches]
+    if unmatched:
+        console.print(
+            "Texts that match no option are reported as 'unrecognized'. If one is the name the "
+            "client shows for an option, add it to that option's observed_label_aliases in the "
+            "main study's experiment.yaml before planning it."
+        )
+
+
+@app.command()
+@_errors
 def plan(
     study: StudyOpt = Path("."),
     seed: Annotated[int | None, typer.Option(help="Override the seed in experiment.yaml.")] = None,
@@ -282,6 +349,8 @@ def status(study: StudyOpt = Path(".")) -> None:
     )
     if s.is_synthetic():
         console.print("[bold red]SYNTHETIC DEMO DATA — not real observations[/]")
+    if definition.pilot:
+        console.print(f"[bold yellow]{PILOT_BANNER}[/]")
     recorded = Counter(r.condition_id for r in s.records)
     excluded = Counter(r.condition_id for r in s.records if r.excluded)
     planned = Counter(r.condition_id for r in plan_.runs)
@@ -823,6 +892,8 @@ def analyze_cmd(
     console.print(f"[bold]{d.title}[/] — {d.experiment_id} v{d.experiment_version}")
     if a.synthetic:
         console.print(f"[bold red]{DEMO_BANNER}[/]")
+    if d.pilot:
+        console.print(f"[bold yellow]{PILOT_BANNER}[/]")
     planned = len(a.plan.runs) if a.plan else 0
     console.print(
         f"Recorded {len(a.results)} of {planned} planned runs; "
@@ -949,6 +1020,8 @@ def report(
     console.print(f"Wrote {target}")
     if a.synthetic:
         console.print(f"[bold red]{DEMO_BANNER}[/]")
+    if a.definition.pilot:
+        console.print(f"[bold yellow]{PILOT_BANNER}[/]")
     if not a.has_data:
         console.print("No observations yet: the report contains the design but no results.")
 

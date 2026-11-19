@@ -1044,6 +1044,14 @@ def build_limitations(analysis: Analysis) -> list[Limitation]:
                 "and carry no information about any real model or service.",
             )
         )
+    if d.pilot:
+        out.append(
+            Limitation(
+                "data",
+                "This is a PILOT study: real observations collected to check the protocol and the "
+                "labels the client displays. They are not part of the experiment's results.",
+            )
+        )
     if d.execution_method == "manual_ui":
         out += [
             Limitation(
@@ -1300,6 +1308,8 @@ def build_claims(analysis: Analysis) -> list[Claim]:
     for hyp in d.hypotheses:
         claims.append(Claim("hypothesis", f"{hyp.id}: {hyp.statement.strip()}", "experiment.yaml"))
     origin = "synthetic demo data" if analysis.synthetic else "observed in this study"
+    if d.pilot:
+        origin = "observed in a pilot study (not part of the results)"
     if analysis.has_data:
         for row in analysis.conditions.itertuples():
             if row.n_scored:

@@ -318,10 +318,20 @@ class ExperimentDefinition(StrictModel):
     demo: bool = Field(
         default=False, description="True only for synthetic demo studies created by `mblab demo`."
     )
+    pilot: bool = Field(
+        default=False,
+        description=(
+            "True for a pilot study made by `mblab pilot`: real observations used to check the "
+            "protocol and the labels the client displays, never part of the results."
+        ),
+    )
 
     @model_serializer(mode="wrap")
     def _serialize(self, handler: Any) -> dict[str, Any]:
-        return _drop_unset(handler(self), "api")
+        data = _drop_unset(handler(self), "api")
+        if not data.get("pilot"):
+            data.pop("pilot", None)  # keeps the hash of non-pilot definitions unchanged
+        return data
 
     def _execution_problems(self) -> list[str]:
         problems: list[str] = []

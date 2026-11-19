@@ -29,6 +29,7 @@ from mblab.formatting import (
     seconds,
     tokens,
 )
+from mblab.pilot import PILOT_BANNER
 from mblab.schema import ExactMatchScoring, ManualScoring, NumericScoring, RegexScoring
 from mblab.stats import Interval
 from mblab.study import GRADES_FILE, RECORDS_FILE, Study
@@ -107,9 +108,13 @@ def _header(a: Analysis, study: Study, now: datetime) -> list[str]:
     d = a.definition
     planned = len(a.plan.runs) if a.plan else 0
     origin = "synthetic demo data" if a.synthetic else "observed by the experimenter"
+    if d.pilot:
+        origin += ", pilot study"
     out = [f"# {d.title}", ""]
     if a.synthetic:
         out += [f"> **{DEMO_BANNER}**", ""]
+    if d.pilot:
+        out += [f"> **{PILOT_BANNER}**", ""]
     out += [
         md_table(
             ["Item", "Value"],

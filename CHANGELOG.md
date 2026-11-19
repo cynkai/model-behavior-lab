@@ -12,6 +12,10 @@
   usage incl. reasoning tokens), copied as returned; rejected in UI records. Validation,
   analysis, reports, and the dashboard show these values for API studies.
 - Optional extra `api` (`openai>=1.66`). UI definitions keep their hashes.
+- Pilot studies: `mblab pilot` makes a separate one-repetition copy of a study
+  (`pilot: true`, labelled PILOT in reports, CLI, and dashboard) to rehearse the protocol,
+  and `mblab labels` lists displayed labels verbatim so `observed_label_aliases` can be
+  settled before the main study is planned.
 
 ## 0.1.0 — 2026-11-19
 

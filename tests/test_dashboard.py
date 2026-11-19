@@ -112,3 +112,13 @@ def test_every_page_renders_an_api_study(monkeypatch, tmp_path):
     _goto(at, "Condition comparison")
     assert _charts(at) == 2  # accuracy and latency; no displayed-label chart
     assert any("Values reported by the API" in h.value for h in at.subheader)
+
+
+def test_pilot_study_shows_the_pilot_banner(monkeypatch, study_dir):
+    from mblab.pilot import create_pilot_study
+
+    _, root = create_pilot_study(study_dir)
+    at = _app(monkeypatch, root)
+    for page in PAGES:
+        _goto(at, page)
+        assert any("PILOT DATA" in w.value for w in at.warning), page

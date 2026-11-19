@@ -93,7 +93,10 @@ mblab dashboard -s demo-study    # http://localhost:8501
 ```bash
 mblab init my-study              # 템플릿으로 my-study/experiment.yaml 생성
 # my-study/experiment.yaml 수정: `platform`을 정하고, 선택지 이름을 앱에 보이는 그대로
-# 옮겨 적습니다. 데이터를 모으기 전에 정의를 확정하세요.
+# 옮겨 적습니다.
+mblab pilot -s my-study          # 별도 파일럿 실험(24회): my-study-pilot/
+mblab labels -s my-study-pilot   # 파일럿 후: 앱이 표시한 라벨을 그대로 나열
+# my-study/experiment.yaml의 라벨과 observed_label_aliases를 고친 뒤 정의를 확정하세요.
 mblab plan -s my-study           # 72회 실행을 시드 기반 무작위 순서로
 mblab next -s my-study --copy    # 앱에서 맞출 설정 + 정확한 프롬프트(클립보드로 복사)
 mblab record -s my-study         # 앱이 보여 준 내용을 한 회씩 입력
@@ -120,6 +123,8 @@ mblab report -s my-study
 | `mblab plan` | 무작위 실행 순서(`plan.json`) 생성, 정의 해시·스냅샷 저장 |
 | `mblab status` | 조건별 진행 상황, 다음 실행, 검증 요약 |
 | `mblab next [--copy]` | 다음 실행: 클라이언트에서 맞출 설정과 정확한 프롬프트 |
+| `mblab pilot` | 프로토콜을 미리 해 보고 앱이 표시하는 라벨을 확인하는 별도 파일럿 실험 생성(`<study>-pilot`, 반복 1회) |
+| `mblab labels` | 앱이 표시한 모델 라벨을 그대로 나열(조건, 표시 위치, 일치하는 선택지) |
 | `mblab record` | 한 회를 대화형으로 기록(`--response-file`, `--paste`, `--run-id`, `--replace`) |
 | `mblab run-api` | 공식 API 실험의 남은 회차를 OpenAI Responses API로 전송(`--dry-run`, `--limit N`, `--min-interval`, `--yes`). `api` 추가 설치와 `OPENAI_API_KEY` 필요 |
 | `mblab template` | 계획된 실행마다 한 행인 CSV 입력 양식 생성 |

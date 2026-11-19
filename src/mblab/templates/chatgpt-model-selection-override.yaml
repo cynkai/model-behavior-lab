@@ -1,0 +1,276 @@
+# Model Behavior Lab — experiment definition
+# =============================================================================
+# This file is the pre-registration of the experiment. Settle it BEFORE you
+# collect any data. `mblab plan` stores a hash and a full snapshot of it, and
+# `mblab validate` reports every later change (for example an edited answer key).
+#
+# Field reference:  docs/methodology.md
+# How to run it:    docs/experiment-protocol.md
+# =============================================================================
+
+schema_version: 1
+experiment_id: chatgpt-model-selection-override
+experiment_version: "1.0.0"
+title: ChatGPT Model Selection Override Experiment
+service: chatgpt
+# The client you run the experiment on: ios | android | web | macos | windows.
+# One study = one platform. Run a second study to compare platforms.
+platform: ios
+# manual_ui: you operate the official app by hand and type in what you saw.
+# Nothing in this tool automates, scrapes, or intercepts the ChatGPT client.
+execution_method: manual_ui
+
+research_questions:
+  - >-
+    When a default model selection and a per-message selection (chosen by
+    long-pressing the send button) are both set in the ChatGPT mobile app,
+    which one is reflected in the model information the client displays and in
+    the observable behaviour of the response?
+
+hypotheses:
+  - id: H1
+    statement: >-
+      When the per-message selection differs from the default selection, the
+      observable properties of the response correspond to the per-message
+      selection.
+    predictions:
+      - "Client-displayed model labels in C name Pro and in D name Instant."
+      - "On behavioural proxies (accuracy, response time, thinking indicator), C resembles B and D resembles A."
+  - id: H1-alt
+    statement: >-
+      When the per-message selection differs from the default selection, the
+      observable properties of the response correspond to the default selection.
+    predictions:
+      - "Client-displayed model labels in C name Instant and in D name Pro."
+      - "On behavioural proxies, C resembles A and D resembles B."
+  # Use with the optional conditions E/F below:
+  # - id: H2
+  #   statement: >-
+  #     Choosing the same setting as both the default and the per-message
+  #     selection produces behaviour that is not distinguishable from choosing
+  #     it once. (Not detecting a difference does not establish equivalence.)
+
+# Statements you verified in OFFICIAL documentation, each with its URL and the
+# date you read it. Leave the list empty rather than guessing. Reports keep
+# these apart from hypotheses and from what the experiment observed.
+documented_facts: []
+# - statement: "..."
+#   source_url: "https://help.openai.com/..."
+#   accessed_on: 2026-11-19
+
+# What this experiment cannot observe. Repeated in every report.
+not_observable:
+  - The server-side model identifier that produced a response.
+  - Internal routing decisions, including automatic switching or fallback between models.
+  - Hidden reasoning tokens or how much compute was spent on a response.
+  - Whether the account is part of a server-side experiment (A/B test) that changes behaviour.
+
+# Options exactly as your client's model picker shows them. Labels change
+# between app versions — copy them from your screen. `observed_label_aliases`
+# lists any OTHER text the client may display next to a response produced with
+# that option. Fill it in before collecting data so that label matching is not
+# decided after seeing the results.
+selection_options:
+  - id: instant
+    label: Instant
+    observed_label_aliases: []
+  - id: pro
+    label: Pro
+    observed_label_aliases: []
+  # - id: extra-high
+  #   label: Extra High
+  #   observed_label_aliases: []
+
+conditions:
+  - id: A
+    label: Default Instant, no per-message selection
+    model_selection: instant
+    message_override: null
+    role: control
+  - id: B
+    label: Default Pro, no per-message selection
+    model_selection: pro
+    message_override: null
+    role: control
+  - id: C
+    label: Default Instant, per-message Pro
+    model_selection: instant
+    message_override: pro
+    role: test
+    hypothesis_ids: [H1, H1-alt]
+  - id: D
+    label: Default Pro, per-message Instant
+    model_selection: pro
+    message_override: instant
+    role: test
+    hypothesis_ids: [H1, H1-alt]
+  # More conditions are just more entries. Add the selection option first.
+  # - id: E
+  #   label: Default Extra High, no per-message selection
+  #   model_selection: extra-high
+  #   message_override: null
+  #   role: control
+  # - id: F
+  #   label: Default Extra High, per-message Extra High (same setting twice)
+  #   model_selection: extra-high
+  #   message_override: extra-high
+  #   role: test
+  #   hypothesis_ids: [H2]
+  # - id: G
+  #   label: Default Extra High, per-message Instant
+  #   model_selection: extra-high
+  #   message_override: instant
+  #   role: test
+  #   hypothesis_ids: [H1, H1-alt]
+
+# 4 conditions x 6 tasks x 3 repetitions = 72 runs. An exploratory size, not a
+# sample size chosen for statistical power.
+repetitions: 3
+randomization:
+  seed: 20261119
+  # blocked_by_repetition: every condition x task appears once per block, in a
+  # shuffled order, so slow drifts (time of day, app updates) hit all
+  # conditions alike. `complete` shuffles all runs together.
+  strategy: blocked_by_repetition
+
+# Recorded for every run. Values outside allowed_values are rejected.
+confounders:
+  - id: memory
+    question: Was ChatGPT memory (saved memories or chat-history reference) enabled?
+    allowed_values: [enabled, disabled, unknown]
+  - id: custom_instructions
+    question: Were custom instructions or a personality preset active?
+    allowed_values: [active, inactive, unknown]
+  - id: tools_used
+    question: Did the response visibly use a tool (web search, code, canvas, other)?
+    allowed_values: [none, web_search, code, other, unknown]
+  - id: switch_notice
+    question: Did the client show a notice about a usage limit or a changed/unavailable model?
+    allowed_values: [none, limit_notice, model_switch_notice, other, unknown]
+  - id: network
+    question: Network connection during the run.
+    allowed_values: [wifi, cellular, unknown]
+
+latency_protocol: >-
+  Start a stopwatch the moment you tap send. Stop it when the response has
+  finished streaming (the stop button turns back into the send button). Record
+  seconds with latency_method=manual_stopwatch. This is a manual measurement:
+  it includes human reaction time (roughly a second either way), network, and
+  rendering time. Do not compare it with latency measured through an API.
+
+# Six tasks, all scored automatically. Reference answers are machine-checked in
+# tests/test_template_answers.py. Difficulty is the author's prior judgement,
+# not a calibrated rating. Every prompt ends with the same instructions.
+tasks:
+  - id: T1
+    title: Elapsed time
+    category: arithmetic
+    difficulty: easy
+    prompt: |-
+      A train departs at 09:47 and arrives at 14:12 on the same day. How many minutes does the trip take?
+
+      Do not use web search, code execution, or any other tools.
+      End your reply with a final line in exactly this format:
+      ANSWER: <your answer>
+    reference_answer: "265"
+    scoring:
+      method: numeric
+      expected: 265
+
+  - id: T2
+    title: Calendar offset
+    category: date reasoning
+    difficulty: medium
+    prompt: |-
+      What calendar date is exactly 100 days after 19 November 2026? Give the date in YYYY-MM-DD format.
+
+      Do not use web search, code execution, or any other tools.
+      End your reply with a final line in exactly this format:
+      ANSWER: <your answer>
+    reference_answer: "2027-02-27"
+    scoring:
+      method: regex
+      # The date, and no other digits, on the answer line.
+      pattern: '^\D*2027-02-27\D*$'
+
+  - id: T3
+    title: Letter count
+    category: character counting
+    difficulty: medium
+    prompt: |-
+      How many times does the letter "e" (uppercase or lowercase) appear in the sentence below?
+
+      Seventeen elegant elephants entered the emerald temple, never resting even once.
+
+      Do not use web search, code execution, or any other tools.
+      End your reply with a final line in exactly this format:
+      ANSWER: <your answer>
+    reference_answer: "22"
+    scoring:
+      method: numeric
+      expected: 22
+
+  - id: T4
+    title: Seating puzzle
+    category: logic
+    difficulty: hard
+    prompt: |-
+      Five people — Ana, Ben, Cho, Dev, and Eun — sit in five chairs numbered 1 to 5 from left to right, one person per chair.
+
+      1. Ben sits somewhere to the left of Eun.
+      2. Cho sits in an even-numbered chair.
+      3. Ana sits directly next to Dev.
+      4. Eun is not in chair 5.
+      5. Dev is not at either end of the row.
+
+      Exactly one arrangement satisfies all five clues. List the people from chair 1 to chair 5.
+
+      Do not use web search, code execution, or any other tools.
+      End your reply with a final line in exactly this format:
+      ANSWER: <your answer>
+    reference_answer: "Ben, Cho, Eun, Dev, Ana"
+    scoring:
+      method: regex
+      # The five names in this order, any separators, nothing else.
+      pattern: '^\W*ben\W+cho\W+eun\W+dev\W+ana\W*$'
+      ignore_case: true
+
+  - id: T5
+    title: Digit-sum count
+    category: combinatorics
+    difficulty: hard
+    prompt: |-
+      How many positive integers less than 10,000 have digits that add up to exactly 20?
+
+      Do not use web search, code execution, or any other tools.
+      End your reply with a final line in exactly this format:
+      ANSWER: <your answer>
+    reference_answer: "633"
+    scoring:
+      method: numeric
+      expected: 633
+
+  - id: T6
+    title: Code trace
+    category: program tracing
+    difficulty: hard
+    prompt: |-
+      What does the following Python program print? Work it out without running it.
+
+      def f(n):
+          seen = set()
+          while n not in seen:
+              seen.add(n)
+              n = sum(int(d) ** 2 for d in str(n))
+          return n, len(seen)
+
+      print(f(2027))
+
+      Do not use web search, code execution, or any other tools.
+      End your reply with a final line in exactly this format:
+      ANSWER: <your answer>
+    reference_answer: "(37, 13)"
+    scoring:
+      method: exact_match
+      accepted: ["(37, 13)", "37, 13"]
+      normalize: [strip_markdown, remove_whitespace, strip_edge_punctuation]

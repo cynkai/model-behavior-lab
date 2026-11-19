@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Secrets: never commit API keys, tokens, or credentials
+.env
+.env.*
+*.pem
+*.key
+.streamlit/secrets.toml
+
+# Local studies and generated output. They can contain conversation text;
+# share them deliberately (see CONTRIBUTING.md), not by accident.
+studies/
+demo-study/
+my-study/
+*.local.*
+
+# OS / editors
+.DS_Store
+.idea/
+.vscode/

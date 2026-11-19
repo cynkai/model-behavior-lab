@@ -1,0 +1,58 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "model-behavior-lab"
+version = "0.1.0"
+description = "Reproducible, honest experiments on whether AI services behave as configured (model selection, reasoning effort)."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.11"
+authors = [{ name = "cynkai" }]
+keywords = ["llm", "evaluation", "reproducibility", "experiment", "chatgpt", "reasoning-effort"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Science/Research",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+  "typer>=0.12",
+  "pydantic>=2.6",
+  "pandas>=2.1",
+  "numpy>=1.26",
+  "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dashboard = ["streamlit>=1.37"]
+dev = ["pytest>=8.0", "ruff>=0.6", "streamlit>=1.37"]
+
+[project.scripts]
+mblab = "mblab.cli:app"
+
+[project.urls]
+Homepage = "https://github.com/cynkai/model-behavior-lab"
+Issues = "https://github.com/cynkai/model-behavior-lab/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mblab"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF"]
+ignore = ["RUF001", "RUF002", "RUF003"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"

@@ -9,17 +9,33 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Annotated, Any, TypeVar
 
+import pandas as pd
 import typer
 from pydantic import ValidationError
 from rich.console import Console
 from rich.table import Table
 
 from mblab import __version__
+from mblab.analysis import LABEL_CLASSES, Analysis, AnalysisSettings, analyze
 from mblab.clipboard import copy_text, paste_text
+from mblab.demo import DEMO_BANNER, create_demo_study
 from mblab.exchange import import_file, merge_records, parse_timezone, write_template_csv
+from mblab.formatting import (
+    COMPARISON_STATUS,
+    METRIC_NAMES,
+    VERDICT_SHORT,
+    interval_text,
+    method_text,
+    metric_value,
+    pct,
+    pct_ci,
+    seconds,
+)
+from mblab.grading import export_blind_sheet, import_blind_sheet
 from mblab.plan import generate_plan
 from mblab.records import build_record, condition_instructions, next_pending
 from mblab.schema import PlannedRun, RunRecord
+from mblab.stats import Interval
 from mblab.study import (
     DEFAULT_TEMPLATE,
     DEFINITION_FILE,
@@ -29,6 +45,7 @@ from mblab.study import (
     StudyError,
     append_jsonl,
     available_templates,
+    dump_json,
     format_validation_error,
     load_definition,
     load_plan,
@@ -520,3 +537,238 @@ def validate(
     _print_validation_summary(report)
     if report.errors or (strict and report.warnings):
         raise typer.Exit(1)
+
+
+# -- commands: analysis -----------------------------------------------------------------
+
+
+def _print_condition_table(a: Analysis) -> None:
+    conf = int(a.settings.confidence * 100)
+    table = Table(
+        "cond",
+        "default",
+        "per-message",
+        "scored",
+        "accuracy",
+        f"{conf}% CI",
+        "success",
+        "format fail",
+        f"median time ({method_text(a.primary_latency_method)})",
+        "thinking shown",
+        title="Conditions",
+    )
+    for row in a.conditions.itertuples():
+        table.add_row(
+            row.condition_id,
+            row.model_selection,
+            row.message_override,
+            f"{row.n_scored}",
+            pct(row.accuracy),
+            pct_ci(row.accuracy_low, row.accuracy_high),
+            pct(row.success_rate),
+            str(row.n_format_failures),
+            f"{seconds(row.latency_median)} (n={row.latency_n})",
+            f"{pct(row.thinking_shown_rate)} (n={row.thinking_known_n})",
+        )
+    console.print(table)
+
+
+def _print_label_table(a: Analysis) -> None:
+    headers = {
+        "matches_override": "per-message",
+        "matches_default": "default",
+        "matches_both": "both",
+        "other_option": "other option",
+        "unrecognized": "unrecognized",
+        "not_displayed": "none shown",
+    }
+    table = Table("cond", *[headers[c] for c in LABEL_CLASSES], title="Displayed model labels")
+    for row in a.labels.itertuples(index=False):
+        table.add_row(row.condition_id, *[str(getattr(row, c)) for c in LABEL_CLASSES])
+    console.print(table)
+
+
+def _print_overrides(a: Analysis) -> None:
+    for item in a.overrides:
+        kind = "same setting twice" if item.stacked else "per-message differs from default"
+        console.print(f"[bold]Condition {item.condition_id}[/] ({kind})")
+        console.print(f"  Labels: {item.label_summary}")
+        if item.note:
+            console.print(f"  {item.note}")
+            continue
+        table = Table(
+            "metric",
+            item.condition_id,
+            f"default ref {item.default_ref}",
+            f"per-message ref {item.override_ref}",
+            "assessment",
+        )
+        for m in item.metrics:
+            table.add_row(
+                m.metric,
+                metric_value(m.condition_value, m.unit),
+                metric_value(m.default_ref_value, m.unit),
+                metric_value(m.override_ref_value, m.unit),
+                VERDICT_SHORT[m.verdict],
+            )
+        console.print(table)
+
+
+def _print_comparisons(a: Analysis) -> None:
+    conf = int(a.settings.confidence * 100)
+    table = Table(
+        "metric",
+        "first",
+        "second",
+        "n",
+        f"first − second [{conf}% CI]",
+        "status",
+        title="Pairwise differences",
+    )
+    for row in a.comparisons.itertuples():
+        unit = "proportion" if row.metric == "accuracy" else "seconds"
+        iv = None if pd.isna(row.difference) else Interval(row.difference, row.low, row.high)
+        table.add_row(
+            METRIC_NAMES[row.metric],
+            row.condition_a,
+            row.condition_b,
+            f"{row.n_a}/{row.n_b}",
+            interval_text(iv, unit),
+            COMPARISON_STATUS[row.status],
+        )
+    console.print(table)
+
+
+@app.command("analyze")
+@_errors
+def analyze_cmd(
+    study: StudyOpt = Path("."),
+    json_out: Annotated[
+        Path | None, typer.Option("--json", help="Also write the full analysis as JSON.")
+    ] = None,
+    min_n: Annotated[int, typer.Option(help="Minimum observations per group to compare.")] = 5,
+    confidence: Annotated[float, typer.Option(help="Confidence level for intervals.")] = 0.95,
+) -> None:
+    """Score responses and summarise results per condition, with uncertainty."""
+    s = Study.load(study)
+    seed = s.plan.seed if s.plan else 0
+    a = analyze(s, AnalysisSettings(confidence=confidence, min_n=min_n, seed=seed))
+    d = a.definition
+    console.print(f"[bold]{d.title}[/] — {d.experiment_id} v{d.experiment_version}")
+    if a.synthetic:
+        console.print(f"[bold red]{DEMO_BANNER}[/]")
+    planned = len(a.plan.runs) if a.plan else 0
+    console.print(
+        f"Recorded {len(a.results)} of {planned} planned runs; "
+        f"{int(a.results['excluded'].sum()) if not a.results.empty else 0} excluded."
+    )
+    _print_validation_summary(a.validation)
+    if json_out:
+        json_out.parent.mkdir(parents=True, exist_ok=True)
+        json_out.write_text(dump_json(a.to_dict()), encoding="utf-8")
+        console.print(f"Wrote {json_out}")
+    if not a.has_data:
+        console.print("No observations recorded yet — there is nothing to analyse.")
+        return
+    _print_condition_table(a)
+    _print_label_table(a)
+    _print_overrides(a)
+    _print_comparisons(a)
+    console.print(
+        "Accuracy counts format failures as incorrect; success rate also counts errors and "
+        "refusals as failures. Intervals are approximate and assume independent responses."
+    )
+    console.print(
+        f"{len(a.limitations)} limitation(s) apply. Full write-up: mblab report -s {study}"
+    )
+
+
+@app.command()
+@_errors
+def export(
+    study: StudyOpt = Path("."),
+    fmt: Annotated[str, typer.Option("--format", help="csv or json.")] = "csv",
+    out: Annotated[
+        Path | None, typer.Option(help="Output path (default: <study>/exports/results.<format>).")
+    ] = None,
+) -> None:
+    """Export one row per recorded run, with its automatic or manual score."""
+    if fmt not in {"csv", "json"}:
+        raise StudyError("--format must be csv or json")
+    s = Study.load(study)
+    a = analyze(s)
+    target = out or study / "exports" / f"results.{fmt}"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    frame = a.results.copy()
+    frame.insert(0, "synthetic_data", a.synthetic)
+    if fmt == "csv":
+        frame.to_csv(target, index=False)
+    else:
+        rows = frame.astype(object).where(frame.notna(), None).to_dict("records")
+        target.write_text(dump_json(rows), encoding="utf-8")
+    console.print(f"Wrote {target} ({len(frame)} rows).")
+    if a.synthetic:
+        console.print(f"[bold red]{DEMO_BANNER}[/]")
+
+
+grade_app = typer.Typer(help="Blind manual grading for tasks scored by hand.", no_args_is_help=True)
+app.add_typer(grade_app, name="grade")
+
+
+@grade_app.command("export")
+@_errors
+def grade_export(
+    study: StudyOpt = Path("."),
+    out_dir: Annotated[
+        Path | None,
+        typer.Option(help="Where to write the sheet and key (default: <study>/grading)."),
+    ] = None,
+) -> None:
+    """Write a shuffled grading sheet without condition information, plus a separate key."""
+    s = Study.load(study)
+    sheet, key, n = export_blind_sheet(s, out_dir)
+    console.print(f"Wrote {sheet} ({n} responses) and {key}.")
+    console.print("Give graders the sheet only. Keep the key file away from them.")
+
+
+@grade_app.command("import")
+@_errors
+def grade_import(
+    sheet: Annotated[Path, typer.Argument(help="The filled-in grading sheet (CSV).")],
+    study: StudyOpt = Path("."),
+    key: Annotated[
+        Path | None, typer.Option(help="Key file (default: blind-key.json next to the sheet).")
+    ] = None,
+    grader: Annotated[
+        str | None, typer.Option(help="Grader id for rows without a grader_id.")
+    ] = None,
+) -> None:
+    """Import points from a grading sheet into grades.jsonl."""
+    s = Study.load(study)
+    result = import_blind_sheet(s, sheet, key or sheet.with_name("blind-key.json"), grader)
+    if result.errors:
+        for err in result.errors:
+            err_console.print(f"[red]{err}[/]")
+        raise StudyError(f"{len(result.errors)} invalid row(s); no grades were imported")
+    if result.grades:
+        append_jsonl(s.grades_path, result.grades)
+    console.print(
+        f"Imported {len(result.grades)} grade(s); {result.skipped_blank} row(s) without points."
+    )
+
+
+# -- commands: demo ------------------------------------------------------------------------
+
+
+@app.command()
+@_errors
+def demo(
+    directory: Annotated[Path, typer.Argument(help="New directory for the synthetic study.")],
+    seed: Annotated[int, typer.Option(help="Random seed for the synthetic values.")] = 7,
+    force: Annotated[bool, typer.Option(help="Write into a non-empty directory.")] = False,
+) -> None:
+    """Create a SYNTHETIC demo study (random values, clearly labelled) to try the tools."""
+    s = create_demo_study(directory, seed=seed, force=force)
+    console.print(f"[bold red]{DEMO_BANNER}[/]")
+    console.print(f"Created {directory} with {len(s.records)} synthetic records.")
+    console.print(f"Try: mblab analyze -s {directory}   |   mblab dashboard -s {directory}")

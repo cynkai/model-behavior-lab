@@ -222,5 +222,13 @@ class Study:
         return self.definition.demo or any(r.data_origin == "synthetic" for r in self.records)
 
 
+def _jsonable(value: object) -> object:
+    if hasattr(value, "item"):  # numpy scalars
+        return value.item()
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    return str(value)
+
+
 def dump_json(data: object) -> str:
-    return json.dumps(data, indent=2, ensure_ascii=False, default=str) + "\n"
+    return json.dumps(data, indent=2, ensure_ascii=False, default=_jsonable) + "\n"

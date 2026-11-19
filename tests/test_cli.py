@@ -170,3 +170,39 @@ def test_validate_fails_on_errors(planned):
     (planned / "records.jsonl").write_text(json.dumps({"run_id": "x"}) + "\n", encoding="utf-8")
     result = run("validate", "-s", planned)
     assert result.exit_code == 1 and "unreadable_line" in result.output
+
+
+def test_demo_analyze_and_export(tmp_path):
+    root = tmp_path / "demo"
+    created = run("demo", root)
+    assert created.exit_code == 0 and "SYNTHETIC DEMO DATA" in created.output
+    result = run("analyze", "-s", root, "--json", root / "reports" / "analysis.json")
+    assert result.exit_code == 0, result.output
+    assert "SYNTHETIC DEMO DATA" in result.output
+    for heading in ("Conditions", "Displayed model labels", "Pairwise differences"):
+        assert heading in result.output
+    payload = json.loads((root / "reports" / "analysis.json").read_text())
+    assert payload["synthetic_data"] is True
+
+    assert run("export", "-s", root).exit_code == 0
+    with (root / "exports" / "results.csv").open(encoding="utf-8", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    assert len(rows) == 68 and rows[0]["synthetic_data"] == "True"
+    assert run("export", "-s", root, "--format", "json").exit_code == 0
+    assert len(json.loads((root / "exports" / "results.json").read_text())) == 68
+    assert run("export", "-s", root, "--format", "xml").exit_code == 2
+
+    again = run("demo", root)
+    assert again.exit_code == 2 and "not empty" in again.output
+
+
+def test_analyze_without_records_shows_no_numbers(planned):
+    result = run("analyze", "-s", planned)
+    assert result.exit_code == 0
+    assert "No observations recorded yet" in result.output
+    assert "Conditions" not in result.output
+
+
+def test_grade_export_without_manual_tasks(planned):
+    result = run("grade", "export", "-s", planned)
+    assert result.exit_code == 2 and "method: manual" in result.output

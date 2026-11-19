@@ -1,0 +1,153 @@
+from __future__ import annotations
+
+import csv
+import json
+
+import pytest
+import yaml
+
+from mblab.analysis import analyze
+from mblab.demo import create_demo_study
+from mblab.grading import SHEET_COLUMNS, export_blind_sheet, import_blind_sheet
+from mblab.plan import generate_plan
+from mblab.schema import ExperimentDefinition
+from mblab.study import Study, StudyError, append_jsonl, save_plan, template_text
+from mblab.validate import validate_study
+
+from .conftest import FIXED_NOW, make_record, write_records
+
+
+@pytest.fixture
+def manual_study(tmp_path):
+    data = yaml.safe_load(template_text())
+    data["tasks"].append(
+        {
+            "id": "T7",
+            "title": "Explain the trip calculation",
+            "prompt": "Explain how to compute the minutes between 09:47 and 14:12.",
+            "scoring": {
+                "method": "manual",
+                "rubric": "2 = correct method and result; 1 = minor slip; 0 = wrong",
+                "max_points": 2,
+                "pass_threshold": 2,
+            },
+        }
+    )
+    definition = ExperimentDefinition.model_validate(data)
+    plan = generate_plan(definition, now=FIXED_NOW)
+    root = tmp_path / "manual"
+    root.mkdir()
+    (root / "experiment.yaml").write_text(yaml.safe_dump(data), encoding="utf-8")
+    save_plan(plan, root / "plan.json")
+    runs = [r for r in plan.runs if r.task_id == "T7" and r.condition_id in {"A", "C"}]
+    records = [
+        make_record(definition, plan, r.run_id, response_text=f"Explanation {r.run_id}")
+        for r in runs
+    ]
+    write_records(root, records)
+    return root
+
+
+def _fill(sheet, points_by_row, grader="g1"):
+    with sheet.open(encoding="utf-8", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    for row, points in zip(rows, points_by_row, strict=False):
+        row["points"] = points
+        row["grader_id"] = grader
+    with sheet.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=SHEET_COLUMNS)
+        writer.writeheader()
+        writer.writerows(rows)
+    return rows
+
+
+def test_blind_sheet_hides_condition_information(manual_study):
+    study = Study.load(manual_study)
+    sheet, key, n = export_blind_sheet(study)
+    assert n == 6
+    text = sheet.read_text(encoding="utf-8")
+    header = text.splitlines()[0].split(",")
+    assert header == SHEET_COLUMNS
+    for leaked in ("condition", "run_id", "model_selection", "observed_model_label", "latency"):
+        assert leaked not in header
+    with sheet.open(encoding="utf-8", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    assert [r["grading_id"] for r in rows] == [f"G{i:03d}" for i in range(1, 7)]
+    entries = json.loads(key.read_text())["entries"]
+    assert sorted(entries.values()) == sorted(r.run_id for r in study.records)
+
+
+def test_grade_roundtrip_feeds_the_analysis(manual_study):
+    study = Study.load(manual_study)
+    sheet, key, _ = export_blind_sheet(study)
+    _fill(sheet, ["2", "1", "2", "", "0", "2"])
+    result = import_blind_sheet(study, sheet, key)
+    assert result.errors == [] and result.skipped_blank == 1 and len(result.grades) == 5
+    assert all(g.blind for g in result.grades)
+    append_jsonl(study.grades_path, result.grades)
+
+    study = Study.load(manual_study)
+    assert validate_study(study).ok
+    a = analyze(study)
+    manual_rows = a.results[a.results["task_id"] == "T7"]
+    assert set(manual_rows["score_source"]) == {"manual", "none"}
+    assert (manual_rows["score_status"] == "pending_manual").sum() == 1
+    assert any("await manual grading" in lim.text for lim in a.limitations)
+
+    again = import_blind_sheet(study, sheet, key)
+    assert len(again.errors) == 5 and "already graded" in again.errors[0]
+
+
+def test_grade_import_rejects_bad_rows(manual_study):
+    study = Study.load(manual_study)
+    sheet, key, _ = export_blind_sheet(study)
+    rows = _fill(sheet, ["3", "x", "1"])
+    rows[2]["grader_id"] = ""
+    rows[3]["points"] = "1"
+    rows[3]["grading_id"] = "G999"
+    with sheet.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=SHEET_COLUMNS)
+        writer.writeheader()
+        writer.writerows(rows)
+    result = import_blind_sheet(study, sheet, key)
+    messages = " | ".join(result.errors)
+    assert "outside 0..2" in messages
+    assert "not a number" in messages
+    assert "grader_id missing" in messages
+    assert "unknown grading_id" in messages
+
+
+def test_grade_export_needs_manual_tasks(study_dir):
+    with pytest.raises(StudyError, match="method: manual"):
+        export_blind_sheet(Study.load(study_dir))
+
+
+def test_demo_study_is_labelled_and_valid(tmp_path):
+    study = create_demo_study(tmp_path / "demo")
+    assert study.definition.demo is True
+    assert study.definition.experiment_id.startswith("demo-")
+    assert study.definition.title.startswith("[SYNTHETIC DEMO]")
+    assert all(r.data_origin == "synthetic" for r in study.records)
+    assert all(r.response_text.startswith("[SYNTHETIC") for r in study.records if r.response_text)
+    assert len(study.records) == 68
+    report = validate_study(study)
+    assert report.ok, report.errors
+    assert report.n_excluded == 1
+    a = analyze(study)
+    assert a.synthetic
+    assert a.limitations[0].text.startswith("These are SYNTHETIC demo records")
+    assert (tmp_path / "demo" / "experiment.yaml").read_text().startswith("# SYNTHETIC DEMO")
+
+
+def test_demo_is_deterministic_and_refuses_non_empty_dirs(tmp_path):
+    create_demo_study(tmp_path / "one", seed=11)
+    create_demo_study(tmp_path / "two", seed=11)
+    for name in ("records.jsonl", "plan.json", "experiment.yaml"):
+        assert (tmp_path / "one" / name).read_text() == (tmp_path / "two" / name).read_text()
+    with pytest.raises(StudyError, match="not empty"):
+        create_demo_study(tmp_path / "one")
+
+
+def test_real_study_rejects_demo_records(study_dir, definition, plan):
+    write_records(study_dir, [make_record(definition, plan, "A:T1:r1", data_origin="synthetic")])
+    assert not validate_study(Study.load(study_dir)).ok

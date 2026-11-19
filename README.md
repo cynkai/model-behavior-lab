@@ -32,7 +32,7 @@ every report says which is which.
 
 - [Why](#why) · [What it does — and does not](#what-it-does--and-does-not)
 - [Quick start](#quick-start) · [Commands](#commands) · [Study directory](#study-directory)
-- [The first experiment](#the-first-experiment) · [Dashboard](#dashboard)
+- [The first experiment](#the-first-experiment) · [Official-API studies](#official-api-studies-reasoning-effort) · [Dashboard](#dashboard)
 - [Methodology in brief](#methodology-in-brief) · [Data, privacy, terms of service](#data-privacy-and-terms-of-service)
 - [Known limitations](#known-limitations) · [Contributing](#contributing) · [Roadmap](#roadmap)
 
@@ -61,6 +61,9 @@ provides.
   form in the local dashboard — and validate them (duplicates, missing runs, prompt
   wording, confounders, client-version changes, mixed demo/real data, personal data).
 - Score responses automatically (exact match, regex, numeric) or by blind manual grading.
+- Run the same tasks through the provider's **official API** (OpenAI Responses API) to
+  compare reasoning-effort levels of one model, as a separate execution method with its
+  own studies (`mblab run-api`).
 - Summarise per condition with uncertainty (Wilson / Newcombe intervals, seeded
   bootstrap), compare per-message settings against reference conditions with an explicit
   decision table, and write a Markdown report and a local dashboard.
@@ -69,7 +72,9 @@ provides.
 
 - Automate, scrape, or intercept the ChatGPT client, or use any private API.
 - Infer server-side model identity, routing, or hidden reasoning tokens. Those are not
-  observable in a UI experiment, and the reports say so.
+  observable in a UI experiment, and the reports say so. In an API study, the model id
+  and token counts the API reports are recorded as returned — never filled in or guessed.
+- Pool UI and API results. They are different environments, compared side by side only.
 - Ship results. There is no observed data in this repository. Demo data is generated on
   your machine, is random, and is labelled **SYNTHETIC** everywhere it appears.
 
@@ -133,6 +138,7 @@ Every command takes `--study/-s DIR` (default: the current directory, or `$MBLAB
 | `mblab status` | Progress per condition, the next run, a validation summary |
 | `mblab next [--copy]` | Show the next run: what to set in the client and the exact prompt |
 | `mblab record` | Record one run interactively (`--response-file`, `--paste`, `--run-id`, `--replace`) |
+| `mblab run-api` | Send the pending runs of an official-API study through the OpenAI Responses API (`--dry-run`, `--limit N`, `--min-interval`, `--yes`); needs the `api` extra and `OPENAI_API_KEY` |
 | `mblab template` | Write a CSV entry template, one row per planned run |
 | `mblab import FILE` | Import a filled CSV, a JSON array, or JSON lines — all rows valid or nothing is imported (`--dry-run`, `--replace`, `--default-tz`) |
 | `mblab validate` | Check definition, plan, records, and grades (`--strict` fails on warnings) |
@@ -193,6 +199,46 @@ conditions:
     model_selection: extra-high
     message_override: extra-high
 ```
+
+## Official-API studies (reasoning effort)
+
+A second bundled template,
+[`openai-reasoning-effort`](src/mblab/templates/openai-reasoning-effort.yaml), compares
+`reasoning.effort` levels (low / medium / high) of **one model** through the official
+OpenAI Python SDK and the Responses API, on the same six tasks as the UI experiment
+(3 conditions × 6 tasks × 3 repetitions = 54 requests).
+
+```bash
+pip install -e ".[api]"                     # or: uv sync --extra api
+mblab init api-study --template openai-reasoning-effort
+# Edit api-study/experiment.yaml: set api.model and the effort levels it accepts.
+mblab plan -s api-study
+mblab run-api -s api-study --dry-run       # prints every request; sends nothing, costs nothing
+export OPENAI_API_KEY=...                   # read from the environment only, never stored
+mblab run-api -s api-study --limit 6       # asks before sending; re-run to resume
+mblab analyze -s api-study
+mblab report -s api-study
+```
+
+- **Cost.** Every request is billed to the account of the key — input and output tokens,
+  with reasoning tokens counted as output. Higher effort usually means more tokens. The
+  tool does not estimate cost; reports list token totals per condition so you can price
+  them with the provider's current price list. A pre-registered `max_output_tokens` caps
+  each request, and a response that reaches it is recorded as *incomplete* and reported.
+  A request that times out may still be billed, and the runner retries it.
+- **What is recorded.** The request is fully determined by the plan and the definition
+  hash. From each response, the runner copies the model id, status, echoed effort,
+  service tier, incomplete reason, and token usage (including reasoning tokens) into
+  `api_reported` — exactly as returned; a value the API did not return stays empty.
+  Latency comes from a client-side timer (`client_timer`).
+- **Safety.** The key is read from `OPENAI_API_KEY` only, passed straight to the SDK,
+  and never printed or written to any file. Requests use `store=false`, are paced
+  (`--min-interval`, default 1 s), and run in plan order. Each record is saved as soon as
+  its response arrives; errors write nothing, so re-running resumes where it stopped.
+  `run-api` refuses to send if `experiment.yaml` changed after the plan.
+- **UI vs. API.** A study uses one execution method. API results describe API access
+  with this account and model id — not the ChatGPT app — and are compared with UI
+  studies side by side, never pooled.
 
 ## Dashboard
 
@@ -257,8 +303,9 @@ The full write-up is [docs/methodology.md](docs/methodology.md).
 - Use fresh conversations with neutral prompts; do not paste personal conversations.
   `mblab validate` scans recorded text for e-mail addresses, phone numbers, card numbers,
   and API keys (without printing them) before you share a study.
-- No API key is needed for anything in this MVP. A future official-API module will read
-  keys from environment variables only and never write them to disk.
+- No API key is needed for UI studies. Official-API studies read the key from
+  `OPENAI_API_KEY` only, pass it to the official SDK, and never print it or write it to
+  disk; error messages are scrubbed of it. Requests are sent with `store=false`.
 
 ## Known limitations
 
@@ -273,8 +320,12 @@ The full write-up is [docs/methodology.md](docs/methodology.md).
   result may not hold next week.
 - The experimenter cannot be blind to the condition they set; scoring is automatic, and
   manual grading uses a blind sheet, but response style can still hint at the condition.
-- UI experiments and official-API measurements are different domains. This MVP
-  implements UI experiments only; it refuses to mix execution methods in one study.
+- UI experiments and official-API measurements are different domains. A study uses one
+  execution method, records of the other kind are rejected, and results are compared
+  side by side, never pooled.
+- API-reported values (model id, token counts, echoed effort) are the provider's figures,
+  not independently verified. How a reasoning-effort setting is applied internally is
+  not observable.
 
 ## Contributing
 
@@ -286,12 +337,14 @@ what to include.
 
 ## Roadmap
 
-Not implemented yet; the data model already separates execution methods so these can be
-added without changing UI experiments:
+- [x] Official API runner (reasoning-effort levels of one model, OpenAI Responses API), as
+  its own execution method — `mblab run-api`
 
-- [ ] Official API runner (e.g. reasoning-effort levels of one model), as its own execution method
+Not implemented yet; the data model separates execution methods so these can be added
+without changing UI experiments:
+
 - [ ] Anthropic and Google API runners
-- [ ] Cost per reasoning-effort level (API)
+- [ ] Cost per reasoning-effort level (API) — reports list token totals; no price data yet
 - [ ] Cross-study comparison: iOS vs. Android vs. web
 - [ ] Aggregating independent replications; publishing reports on GitHub Pages
 - [ ] Detecting behaviour changes across client or model versions over time

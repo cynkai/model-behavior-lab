@@ -184,7 +184,8 @@ def latency_chart(
         "latency_seconds:Q",
         scale=alt.Scale(type="log"),
         axis=alt.Axis(values=ticks, format="~s"),
-        title=f"Seconds (log scale) — {method.replace('_', ' ')}, low precision",
+        title=f"Seconds (log scale) — {method.replace('_', ' ')}"
+        + ("" if method == "client_timer" else ", low precision"),
     )
     dots = (
         alt.Chart(data)

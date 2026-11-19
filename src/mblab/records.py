@@ -74,6 +74,13 @@ def next_pending(plan: RunPlan, recorded: set[str]) -> PlannedRun | None:
 
 def condition_instructions(definition: ExperimentDefinition, run: PlannedRun) -> list[str]:
     """Plain-language steps for setting up the client for this run."""
+    if definition.execution_method == "official_api" and definition.api is not None:
+        effort = definition.option(run.model_selection).reasoning_effort
+        return [
+            f"Sent by `mblab run-api` as one independent request: model {definition.api.model}, "
+            f"reasoning.effort={effort}, store=false.",
+            "Preview it without sending anything: mblab run-api --dry-run",
+        ]
     default_label = definition.option_label(run.model_selection)
     steps = [
         "Start a NEW conversation.",

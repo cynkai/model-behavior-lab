@@ -93,7 +93,7 @@ def test_report_command_writes_file(study_dir):
 @pytest.mark.parametrize("readme", ["README.md", "docs/README.ko.md"])
 def test_readme_mentions_only_implemented_commands(readme):
     text = (ROOT / readme).read_text(encoding="utf-8")
-    commands = set(re.findall(r"\bmblab ([a-z]+(?: (?:export|import))?)\b", text))
+    commands = set(re.findall(r"\bmblab ([a-z]+(?:-[a-z]+)*(?: (?:export|import))?)\b", text))
     commands.discard("init DIR")
     assert {"init", "plan", "validate", "analyze", "report", "dashboard", "demo"} <= commands
     runner = CliRunner()

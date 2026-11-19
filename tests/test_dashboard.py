@@ -80,3 +80,35 @@ def test_recording_is_disabled_for_demo_studies(monkeypatch, tmp_path):
     at = _goto(_app(monkeypatch, tmp_path / "demo"), "Run plan & recording")
     assert any("recording is disabled" in i.value for i in at.info)
     assert len(at.text_area) == 0
+
+
+def test_every_page_renders_an_api_study(monkeypatch, tmp_path):
+    from mblab import api_runner
+    from mblab.plan import generate_plan
+    from mblab.study import parse_definition, save_plan, template_text
+
+    from .test_api_runner import FIXED_NOW, FakeClient, _fake_module
+
+    root = tmp_path / "api"
+    root.mkdir()
+    text = template_text("openai-reasoning-effort")
+    (root / "experiment.yaml").write_text(text, encoding="utf-8")
+    save_plan(generate_plan(parse_definition(text), now=FIXED_NOW), root / "plan.json")
+    study = Study.load(root)
+    client = FakeClient(delay=0.002)  # so each response time is above 0 s
+    api_runner.send_runs(
+        study,
+        api_runner.pending_runs(study.require_plan(), set(), 30),
+        client=client,
+        sdk=_fake_module(client),
+        sleep=lambda s: None,
+    )
+    at = _app(monkeypatch, root)
+    for page in PAGES:
+        _goto(at, page)
+    _goto(at, "Run plan & recording")
+    assert any("manual entry is disabled" in i.value for i in at.info)
+    assert len(at.text_area) == 0
+    _goto(at, "Condition comparison")
+    assert _charts(at) == 2  # accuracy and latency; no displayed-label chart
+    assert any("Values reported by the API" in h.value for h in at.subheader)

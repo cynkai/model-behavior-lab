@@ -124,6 +124,8 @@ class Analysis:
     comparisons: pd.DataFrame
     overrides: list[OverrideAssessment]
     environment: dict[str, Any]
+    #: Per-condition summary of API-reported values; empty for manual_ui studies.
+    api: pd.DataFrame
     validation: ValidationReport
     limitations: list[Limitation] = field(default_factory=list)
     claims: list[Claim] = field(default_factory=list)
@@ -164,6 +166,7 @@ class Analysis:
             "difficulty": frame(self.difficulty),
             "labels": frame(self.labels),
             "comparisons": frame(self.comparisons),
+            **({"api_reported": frame(self.api)} if not self.api.empty else {}),
             "override_assessments": [
                 {
                     "condition_id": o.condition_id,
@@ -267,6 +270,27 @@ RESULT_COLUMNS = [
     "response_text",
     "notes",
 ]
+#: Extra per-run columns for official_api studies: values the API returned, as returned.
+API_RESULT_COLUMNS = [
+    "api_model",
+    "api_status",
+    "api_reasoning_effort",
+    "api_service_tier",
+    "api_incomplete_reason",
+    "api_input_tokens",
+    "api_cached_input_tokens",
+    "api_output_tokens",
+    "api_reasoning_tokens",
+    "api_total_tokens",
+]
+
+
+def _api_columns(rec: Any) -> dict[str, Any]:
+    reported = rec.api_reported
+    return {
+        col: None if reported is None else getattr(reported, col.removeprefix("api_"))
+        for col in API_RESULT_COLUMNS
+    }
 
 
 def build_results(study: Study) -> pd.DataFrame:
@@ -277,6 +301,7 @@ def build_results(study: Study) -> pd.DataFrame:
     for grade in study.grades:
         grades_by_run.setdefault(grade.run_id, []).append(grade)
     confounder_ids = [c.id for c in definition.confounders]
+    is_api = definition.execution_method == "official_api"
 
     seen: set[str] = set()
     rows = []
@@ -339,11 +364,17 @@ def build_results(study: Study) -> pd.DataFrame:
             "response_text": rec.response_text,
             "notes": rec.notes,
         }
+        if is_api:
+            row.update(_api_columns(rec))
         for cid in confounder_ids:
             row[f"conf_{cid}"] = rec.confounders.get(cid)
         rows.append(row)
 
-    columns = RESULT_COLUMNS + [f"conf_{cid}" for cid in confounder_ids]
+    columns = (
+        RESULT_COLUMNS
+        + (API_RESULT_COLUMNS if is_api else [])
+        + [f"conf_{cid}" for cid in confounder_ids]
+    )
     df = pd.DataFrame(rows, columns=columns)
     if not df.empty:
         df = df.sort_values("sequence").reset_index(drop=True)
@@ -540,6 +571,70 @@ def summarize_labels(definition: ExperimentDefinition, results: pd.DataFrame) ->
     return pd.DataFrame(rows, columns=["condition_id", *LABEL_CLASSES])
 
 
+def summarize_api(definition: ExperimentDefinition, results: pd.DataFrame) -> pd.DataFrame:
+    """Per condition: what the API reported (official_api studies only).
+
+    Counts and medians use only runs where the API returned the value; ``*_n``
+    columns say how many that was. Token sums are given so cost can be worked out
+    from the provider's price list; this tool does not price anything.
+    """
+    columns = [
+        "condition_id",
+        "requested_effort",
+        "n_included",
+        "n_api_values",
+        "models",
+        "n_effort_mismatch",
+        "incomplete_reasons",
+        "reasoning_tokens_n",
+        "reasoning_tokens_median",
+        "reasoning_tokens_q1",
+        "reasoning_tokens_q3",
+        "output_tokens_median",
+        "input_tokens_sum",
+        "output_tokens_sum",
+        "usage_n",
+    ]
+    if definition.execution_method != "official_api":
+        return pd.DataFrame(columns=columns)
+    inc = results[~results["excluded"]] if not results.empty else results
+    rows = []
+    for cond in definition.conditions:
+        sub = inc[inc["condition_id"] == cond.id] if not inc.empty else inc
+        requested = definition.option(cond.model_selection).reasoning_effort
+        has_values = sub["api_status"].notna() if not sub.empty else pd.Series(dtype=bool)
+        echoed = sub["api_reasoning_effort"].dropna() if not sub.empty else pd.Series(dtype=object)
+        reasoning = describe(sub["api_reasoning_tokens"].dropna().tolist() if not sub.empty else [])
+        output = describe(sub["api_output_tokens"].dropna().tolist() if not sub.empty else [])
+        both = (
+            sub[sub["api_input_tokens"].notna() & sub["api_output_tokens"].notna()]
+            if not sub.empty
+            else sub
+        )
+        rows.append(
+            {
+                "condition_id": cond.id,
+                "requested_effort": requested,
+                "n_included": len(sub),
+                "n_api_values": int(has_values.sum()),
+                "models": dict(Counter(sub["api_model"].dropna())) if not sub.empty else {},
+                "n_effort_mismatch": int((echoed != requested).sum()),
+                "incomplete_reasons": (
+                    dict(Counter(sub["api_incomplete_reason"].dropna())) if not sub.empty else {}
+                ),
+                "reasoning_tokens_n": reasoning["n"],
+                "reasoning_tokens_median": reasoning["median"],
+                "reasoning_tokens_q1": reasoning["q1"],
+                "reasoning_tokens_q3": reasoning["q3"],
+                "output_tokens_median": output["median"],
+                "input_tokens_sum": int(both["api_input_tokens"].sum()) if len(both) else None,
+                "output_tokens_sum": int(both["api_output_tokens"].sum()) if len(both) else None,
+                "usage_n": len(both),
+            }
+        )
+    return pd.DataFrame(rows, columns=columns)
+
+
 # -- comparisons ---------------------------------------------------------------------------
 
 
@@ -578,6 +673,12 @@ def _metric_data(
             return _MetricData("median")
         vals = inc.loc[inc["latency_method"] == latency_method, "latency_seconds"].dropna()
         return _MetricData("median", values=tuple(float(v) for v in vals))
+    if metric == "reasoning_tokens_median":
+        if "api_reasoning_tokens" not in inc:
+            return _MetricData("median")
+        return _MetricData(
+            "median", values=tuple(float(v) for v in inc["api_reasoning_tokens"].dropna())
+        )
     if metric == "thinking_seconds_median":
         return _MetricData(
             "median", values=tuple(float(v) for v in inc["thinking_seconds"].dropna())
@@ -627,7 +728,10 @@ def pairwise_comparisons(
                 "status",
             ]
         )
-    for metric in ("accuracy", "latency_median"):
+    metrics = ["accuracy", "latency_median"]
+    if definition.execution_method == "official_api":
+        metrics.append("reasoning_tokens_median")
+    for metric in metrics:
         for i, a in enumerate(conds):
             for b in conds[i + 1 :]:
                 da = _metric_data(results, a, metric, latency_method)
@@ -967,6 +1071,35 @@ def build_limitations(analysis: Analysis) -> list[Limitation]:
                 "scoring does not see the condition.",
             ),
         ]
+    else:
+        out += [
+            Limitation(
+                "standard",
+                "Model ids, token counts, status, and the echoed reasoning effort are what the API "
+                "reported. They are recorded as returned and are not independently verified.",
+            ),
+            Limitation(
+                "standard",
+                "Not observable in this experiment: "
+                + "; ".join(item.rstrip(". ") for item in d.not_observable)
+                + "."
+                if d.not_observable
+                else "How the provider applies a reasoning-effort setting internally is not "
+                "observable beyond the token counts the API reports.",
+            ),
+            Limitation(
+                "standard",
+                "Response times come from a client-side timer around each API call. They include "
+                "network transfer and provider queueing, and are not comparable with stopwatch "
+                "times from UI studies. A retried request is timed on its final attempt only.",
+            ),
+            Limitation(
+                "standard",
+                "An API study describes API access with this account, model id, and settings. It is "
+                "not evidence about how a consumer app behaves, and its results are compared with UI "
+                "studies side by side, never pooled with them.",
+            ),
+        ]
     out += [
         Limitation(
             "standard",
@@ -1069,12 +1202,20 @@ def build_limitations(analysis: Analysis) -> list[Limitation]:
     not_measured = int((inc["latency_method"] == "not_measured").sum())
     if not_measured:
         out.append(Limitation("data", f"Response time was not measured in {not_measured} run(s)."))
-    no_label = int((inc["label_class"] == "not_displayed").sum())
+    if d.execution_method == "official_api":
+        out += _api_data_limitations(analysis)
+        no_label = 0
+    else:
+        no_label = int((inc["label_class"] == "not_displayed").sum())
     if no_label:
         out.append(
             Limitation("data", f"No model label was displayed or recorded in {no_label} run(s).")
         )
-    unrecognized = int((inc["label_class"] == "unrecognized").sum())
+    unrecognized = (
+        0
+        if d.execution_method == "official_api"
+        else int((inc["label_class"] == "unrecognized").sum())
+    )
     if unrecognized:
         out.append(
             Limitation(
@@ -1089,6 +1230,53 @@ def build_limitations(analysis: Analysis) -> list[Limitation]:
                 "data",
                 f"{int((~inc['new_conversation'].astype(bool)).sum())} run(s) were not sent in a new "
                 "conversation.",
+            )
+        )
+    return out
+
+
+def _api_data_limitations(analysis: Analysis) -> list[Limitation]:
+    inc = analysis.included
+    out: list[Limitation] = []
+    missing = int(inc["api_status"].isna().sum())
+    if missing:
+        out.append(Limitation("data", f"{missing} included run(s) carry no API-reported values."))
+    reasons = Counter(inc["api_incomplete_reason"].dropna())
+    if reasons:
+        listing = ", ".join(f"{k}: {v}" for k, v in sorted(reasons.items()))
+        out.append(
+            Limitation(
+                "data",
+                f"The API reported incomplete responses ({listing}). A response that reached "
+                "max_output_tokens is a result of the pre-registered limit, not of the task alone.",
+            )
+        )
+    models = Counter(inc["api_model"].dropna())
+    if len(models) > 1:
+        out.append(
+            Limitation(
+                "data",
+                "The API reported more than one model id: "
+                + ", ".join(f"{k} ({v} runs)" for k, v in sorted(models.items()))
+                + ".",
+            )
+        )
+    mismatches = int(analysis.api["n_effort_mismatch"].sum()) if not analysis.api.empty else 0
+    if mismatches:
+        out.append(
+            Limitation(
+                "data",
+                f"In {mismatches} run(s) the reasoning effort echoed by the API differs from the "
+                "one requested.",
+            )
+        )
+    no_reasoning = int(inc["api_reasoning_tokens"].isna().sum()) - missing
+    if no_reasoning > 0:
+        out.append(
+            Limitation(
+                "data",
+                f"The API returned no reasoning-token count for {no_reasoning} run(s); they are "
+                "left out of reasoning-token summaries, not counted as zero.",
             )
         )
     return out
@@ -1124,6 +1312,18 @@ def build_claims(analysis: Analysis) -> list[Claim]:
                         origin,
                     )
                 )
+        for row in analysis.api.itertuples():
+            if row.reasoning_tokens_n:
+                models = ", ".join(sorted(row.models)) or "none reported"
+                claims.append(
+                    Claim(
+                        "observation",
+                        f"Condition {row.condition_id} (reasoning.effort={row.requested_effort}): "
+                        f"model id(s) reported by the API: {models}; median reported reasoning "
+                        f"tokens {row.reasoning_tokens_median:,.0f} (n={row.reasoning_tokens_n}).",
+                        f"{origin}; values as returned by the API",
+                    )
+                )
         for assessment in analysis.overrides:
             claims.append(
                 Claim(
@@ -1134,6 +1334,16 @@ def build_claims(analysis: Analysis) -> list[Claim]:
             )
     for item in d.not_observable:
         claims.append(Claim("not_verified", item, "not observable in this experiment"))
+    if d.execution_method == "official_api":
+        claims.append(
+            Claim(
+                "not_verified",
+                "How the provider applied each reasoning-effort setting internally, beyond the "
+                "model id and token counts the API reported.",
+                "API-reported values are recorded as returned; they do not establish internals",
+            )
+        )
+        return claims
     claims.append(
         Claim(
             "not_verified",
@@ -1175,6 +1385,7 @@ def analyze(study: Study, settings: AnalysisSettings | None = None) -> Analysis:
         comparisons=pairwise_comparisons(definition, results, settings, primary),
         overrides=assess_overrides(definition, results, labels, settings, primary),
         environment=describe_environment(study, results),
+        api=summarize_api(definition, results),
         validation=validate_study(study),
         primary_latency_method=primary,
     )

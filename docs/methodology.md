@@ -16,7 +16,8 @@ The step-by-step procedure for running the first experiment is in
 | Who sends the prompt | A person, in the official client | A program, through the provider's official API |
 | What the setting means | The options the client offers (labels as displayed) | Documented API parameters |
 | Response time | Stopwatch or screen recording, low precision | Client-side timer, high precision |
-| Status in this MVP | Implemented | Not implemented (design notes in §12) |
+| What is recorded besides the response | What the client displayed (label, thinking indicator) | What the API returned (model id, status, token usage) |
+| Status | Implemented | Implemented for the OpenAI Responses API (`mblab run-api`, §12) |
 
 An experiment uses exactly one execution method. Records whose method or latency
 instrument does not match are rejected, and response times from different instruments
@@ -183,10 +184,77 @@ possible personal data in free text (the matched value is never printed).
   other plans, platforms, or next month's service.
 - **Statistical:** small samples; six tasks; correlated responses within a task.
 
-## 12. Extending to official APIs (design notes, not implemented)
+## 12. Official-API studies (`official_api`)
 
-An API runner would be a separate module producing the same `RunRecord` with
-`execution_method: official_api`, `latency_method: client_timer`, and fields only the API
-reports (for example token usage), kept out of UI studies by validation. Authentication
-would use the provider's official SDK with keys read from environment variables, never
-written to study files. UI and API studies would be compared side by side, not pooled.
+An official-API study sends the same kind of pre-registered tasks through a provider's
+official API instead of a client app. The implemented case is the OpenAI Responses API
+with `reasoning.effort`, through the official `openai` Python SDK (`pip install
+"model-behavior-lab[api]"`). The bundled template `openai-reasoning-effort` compares
+low / medium / high effort of one model on the six tasks of the UI experiment.
+
+**Definition.** `execution_method: official_api` requires an `api` section (`provider`,
+`model`, optional `max_output_tokens`) and a `reasoning_effort` on every selection
+option; one condition per option, and no `message_override` (every request carries
+exactly one setting). Two options may not send the same effort. These fields are
+rejected in `manual_ui` definitions, and they are left out of the definition hash when
+unset, so plans of UI studies made before they existed stay valid.
+
+**What is sent.** `model`, the task prompt as `input`, `reasoning: {effort}`,
+`max_output_tokens` if set, and `store: false` — nothing else (no instructions, tools,
+or conversation state). `mblab run-api --dry-run` prints these requests without sending
+anything or needing a key. `run-api` refuses to send if `experiment.yaml` changed after
+the plan, if the study is not `official_api`, or if `records.jsonl` has unreadable lines.
+
+**What is recorded.** Each record copies its identity from the plan, like a UI record,
+with `latency_method: client_timer`, `client_version` set to the SDK version, and an
+`api_reported` object holding what the response contained: response id, model id,
+status, echoed reasoning effort, service tier, incomplete reason, error, and token usage
+(input, cached input, output, reasoning, total). A value the API did not return stays
+`null`; nothing is computed from other values. Status mapping: `completed` → completed
+(or *refused* if the only content is a refusal), `incomplete` → incomplete,
+`failed` → error; any other status stops the run without a record. A completed response
+with empty text is recorded as returned and scored as a format failure.
+`api_reported` is rejected in UI records, and client-display fields (displayed label,
+thinking indicator) are rejected in API records.
+
+| Quantity | Source | Notes |
+|---|---|---|
+| Model id | `response.model` | Often a dated snapshot of the requested name; several ids in one study are flagged |
+| Echoed effort | `response.reasoning.effort` | A mismatch with the requested effort is flagged |
+| Reasoning tokens | `usage.output_tokens_details.reasoning_tokens` | Part of output tokens; missing counts are not treated as zero |
+| Response time | Client-side timer around the SDK call | Includes network and provider queueing; final attempt only |
+
+**Execution.** Runs are sent one at a time in plan order, at least `--min-interval`
+seconds apart (default 1 s), with the SDK's own retries switched off. Rate-limit,
+connection, and server errors are retried twice with exponential backoff; the record
+then notes the failed attempts, and its timestamp and latency refer to the final attempt.
+Other errors (rejected parameters, authentication, `insufficient_quota`) stop the run at
+once. A failed request writes no record, each successful one is appended immediately,
+and runs with a record are skipped — so running the command again resumes. The key is
+read from `OPENAI_API_KEY` only, passed to the SDK, never printed or written, and
+scrubbed from error messages. If `OPENAI_BASE_URL` is set, the CLI warns that requests
+go to that host.
+
+**Analysis.** The same metrics as §7 (accuracy, success rate, response time), plus per
+condition: runs with API values, reported model ids, echoed-effort mismatches,
+incomplete reasons, reasoning tokens (median and quartiles), and input/output token
+totals. Pairwise differences (§8) include median reasoning tokens. There is no
+per-message decision table (§9) and no displayed-label analysis.
+
+**Cost.** Every request is billed to the key's account for input and output tokens,
+with reasoning tokens billed as output. Higher effort tends to use more tokens; a
+`max_output_tokens` cap bounds each request but responses that reach it are recorded as
+incomplete. A request that times out on the client may still be billed and is retried.
+The tool does not price anything — prices change — but reports list token totals per
+condition so cost can be computed from the provider's price list.
+
+**What it cannot show.** API-reported values are the provider's figures, recorded as
+returned, not independently verified. How the provider applies an effort setting
+internally, the hidden reasoning itself, and whether the weights behind a model id
+changed during the study are not observable. API results describe API access with one
+account and model id; they are not evidence about a consumer app such as ChatGPT.
+
+**UI vs. API.** A study uses one execution method, and records of the other method are
+rejected, so the two are never pooled. To relate them, run a UI study and an API study
+on the same tasks and compare their reports side by side, with each report's own
+limitations; response times from different instruments are never compared directly.

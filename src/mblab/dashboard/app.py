@@ -29,6 +29,7 @@ from mblab.exchange import merge_records
 from mblab.formatting import (
     COMPARISON_STATUS,
     METRIC_NAMES,
+    METRIC_UNITS,
     VERDICT_SHORT,
     interval_text,
     method_text,
@@ -36,6 +37,7 @@ from mblab.formatting import (
     pct,
     pct_ci,
     seconds,
+    tokens,
 )
 from mblab.records import build_record, condition_instructions, next_pending
 from mblab.report import scoring_text
@@ -238,6 +240,11 @@ def page_record(study: Study, a: Analysis) -> None:
         st.info(
             "This is a synthetic demo study; recording is disabled so demo and real data never mix."
         )
+    elif d.execution_method == "official_api":
+        st.info(
+            "This is an official_api study. Its records are written by `mblab run-api` "
+            "(preview with `--dry-run`); manual entry is disabled."
+        )
     else:
         _record_form(study, a, run_id, run_id in recorded)
 
@@ -352,6 +359,7 @@ def page_conditions(study: Study, a: Analysis) -> None:
         return
     mode = _mode()
     conf = int(a.settings.confidence * 100)
+    api = a.definition.execution_method == "official_api"
     summary = pd.DataFrame(
         [
             {
@@ -395,9 +403,51 @@ def page_conditions(study: Study, a: Analysis) -> None:
     _chart(
         lat_chart,
         lat_table,
-        "Manual stopwatch timings include reaction, network and rendering time. They are not "
+        "Client-timer latency includes network transfer and provider queueing. It is not "
+        "comparable with stopwatch times from UI studies. Methods are never pooled."
+        if api
+        else "Manual stopwatch timings include reaction, network and rendering time. They are not "
         "comparable with API latency. Methods are never pooled.",
     )
+    if api:
+        st.subheader("Values reported by the API")
+        _table(
+            pd.DataFrame(
+                [
+                    {
+                        "condition": r.condition_id,
+                        "effort sent": r.requested_effort,
+                        "runs with API values": f"{r.n_api_values}/{r.n_included}",
+                        "model id(s) reported": ", ".join(
+                            f"{k} ({v})" for k, v in sorted(r.models.items())
+                        )
+                        or "—",
+                        "echoed effort ≠ sent": r.n_effort_mismatch,
+                        "incomplete": ", ".join(
+                            f"{k} ({v})" for k, v in sorted(r.incomplete_reasons.items())
+                        )
+                        or "—",
+                        "reasoning tokens median": tokens(r.reasoning_tokens_median),
+                        "Q1–Q3": f"{tokens(r.reasoning_tokens_q1)}–{tokens(r.reasoning_tokens_q3)}",
+                        "n": r.reasoning_tokens_n,
+                        "input / output tokens total": (
+                            f"{tokens(r.input_tokens_sum)} / {tokens(r.output_tokens_sum)}"
+                        ),
+                    }
+                    for r in a.api.itertuples()
+                ]
+            )
+        )
+        st.caption(
+            "Copied from the API responses as returned, not independently verified. Reasoning "
+            "tokens are part of output tokens. No cost is computed."
+        )
+    else:
+        _ui_label_sections(a, mode, conf)
+    _comparison_sections(a, conf)
+
+
+def _ui_label_sections(a: Analysis, mode: str | None, conf: int) -> None:
     st.subheader("Displayed model labels")
     _chart(
         charts.label_chart(a.labels, mode),
@@ -433,6 +483,9 @@ def page_conditions(study: Study, a: Analysis) -> None:
         with st.expander("What the assessments mean"):
             for m in o.metrics:
                 st.markdown(f"- *{m.metric}*: {m.explanation}")
+
+
+def _comparison_sections(a: Analysis, conf: int) -> None:
     tallies = hypothesis_tallies(a)
     if tallies:
         st.subheader("Hypothesis tallies")
@@ -445,7 +498,7 @@ def page_conditions(study: Study, a: Analysis) -> None:
         rows = []
         for r in a.comparisons.itertuples():
             iv = None if pd.isna(r.difference) else Interval(r.difference, r.low, r.high)
-            unit = "proportion" if r.metric == "accuracy" else "seconds"
+            unit = METRIC_UNITS[r.metric]
             rows.append(
                 {
                     "metric": METRIC_NAMES[r.metric],
@@ -544,9 +597,11 @@ def page_responses(study: Study, a: Analysis) -> None:
         "repetition",
         "outcome",
         "extracted_answer",
-        "observed_model_label",
-        "label_class",
-        "thinking_text",
+        *(
+            ["api_model", "api_reasoning_tokens", "api_incomplete_reason"]
+            if a.definition.execution_method == "official_api"
+            else ["observed_model_label", "label_class", "thinking_text"]
+        ),
         "latency_seconds",
         "response_status",
     ]
@@ -571,6 +626,11 @@ def page_responses(study: Study, a: Analysis) -> None:
             "displayed label": row["observed_model_label"],
             "label class": LABEL_CLASS_TEXT.get(row["label_class"], row["label_class"]),
             "thinking": f"{row['thinking_indicator']} {row['thinking_text'] or ''}".strip(),
+            **{
+                col.removeprefix("api_").replace("_", " ") + " (API)": row[col]
+                for col in row.index
+                if col.startswith("api_")
+            },
             "response time": f"{seconds(row['latency_seconds'])} ({method_text(row['latency_method'])})",
             "sent at": row["timestamp"],
             "client version": row["client_version"],
@@ -602,13 +662,22 @@ def page_methodology(study: Study, a: Analysis) -> None:
     c1, c2 = st.columns(2)
     with c1:
         st.subheader("Observed directly")
-        st.markdown(
-            "- The prompt as sent and the response text as displayed\n"
-            "- The model label the client displayed (verbatim), if any\n"
-            "- Whether a thinking indicator appeared, and the duration it displayed\n"
-            "- Response time measured by the experimenter (instrument recorded per run)\n"
-            "- Client version, platform, date, and declared confounders"
-        )
+        if d.execution_method == "official_api":
+            st.markdown(
+                "- The request sent (model id, reasoning.effort, prompt) and the response text\n"
+                "- Values the API returned: model id, status, echoed effort, token usage "
+                "(reasoning tokens included), recorded as returned\n"
+                "- Response time from a client-side timer around each API call\n"
+                "- SDK version and the time each request was sent"
+            )
+        else:
+            st.markdown(
+                "- The prompt as sent and the response text as displayed\n"
+                "- The model label the client displayed (verbatim), if any\n"
+                "- Whether a thinking indicator appeared, and the duration it displayed\n"
+                "- Response time measured by the experimenter (instrument recorded per run)\n"
+                "- Client version, platform, date, and declared confounders"
+            )
     with c2:
         st.subheader("Not observable here")
         for item in d.not_observable or ["Server-side model identity, routing and effort."]:

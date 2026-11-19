@@ -37,6 +37,7 @@ src/mblab/
   plan.py        # seeded run order, definition diffs
   validate.py    # study checks
   exchange.py    # CSV/JSON import and templates
+  api_runner.py  # official-API runner (OpenAI Responses API)
   stats.py       # Wilson, Newcombe, bootstrap
   analysis.py    # summaries, override assessment, limitations, claims
   report.py      # Markdown report
@@ -45,7 +46,7 @@ src/mblab/
   cli.py         # the `mblab` command
   dashboard/     # Streamlit app and chart builders
   templates/     # bundled experiment definitions
-tests/           # pytest suite (no network, no real accounts)
+tests/           # pytest suite (no network, no real accounts, no API keys; the SDK is faked)
 docs/            # methodology, protocol, Korean README
 ```
 

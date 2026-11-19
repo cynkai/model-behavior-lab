@@ -103,9 +103,9 @@ def _version_callback(value: bool) -> None:
 @app.callback()
 def main(
     version: Annotated[
-        bool | None,
+        bool,
         typer.Option("--version", callback=_version_callback, is_eager=True, help="Show version."),
-    ] = None,
+    ] = False,
 ) -> None:
     """Model Behavior Lab."""
 
@@ -793,6 +793,13 @@ def report(
 def dashboard(
     study: StudyOpt = Path("."),
     port: Annotated[int | None, typer.Option(help="Port for the local server.")] = None,
+    address: Annotated[
+        str,
+        typer.Option(
+            help="Interface to listen on. The default keeps the dashboard on this computer; "
+            "study data can contain response text."
+        ),
+    ] = "localhost",
     headless: Annotated[bool, typer.Option(help="Do not open a browser window.")] = False,
 ) -> None:
     """Open the local web dashboard (needs the `dashboard` extra)."""
@@ -814,6 +821,8 @@ def dashboard(
         "false",
         "--client.toolbarMode",
         "minimal",
+        "--server.address",
+        address,
     ]
     if port:
         cmd += ["--server.port", str(port)]

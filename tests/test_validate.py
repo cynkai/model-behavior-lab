@@ -111,14 +111,14 @@ def test_privacy_scan_does_not_echo_values(study_dir, definition, plan):
         plan,
         "A:T1:r1",
         response_text="Contact me at someone@example.com\nANSWER: 265",
-        notes="key sk-abcdefghijklmnopqrstuvwxyz123456",
+        notes="key " + "sk-" + "x" * 30,  # fake key, assembled at runtime
     )
     write_records(study_dir, [rec])
     report = _validate(study_dir)
     privacy = [i for i in report.issues if i.code == "possible_personal_data"]
     assert len(privacy) == 2
     assert all(
-        "someone@example.com" not in i.message and "sk-abc" not in i.message for i in privacy
+        "someone@example.com" not in i.message and "sk-xxx" not in i.message for i in privacy
     )
 
 

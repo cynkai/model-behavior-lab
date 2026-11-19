@@ -1,0 +1,77 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
+        with:
+          python-version: ${{ matrix.python-version }}
+          enable-cache: true
+      - name: Install (locked)
+        run: uv sync --locked --extra dev
+      - name: Lint
+        run: |
+          uv run ruff check .
+          uv run ruff format --check .
+      - name: Test
+        run: uv run pytest -q
+      - name: CLI smoke test on synthetic demo data
+        run: |
+          uv run mblab demo "$RUNNER_TEMP/demo"
+          uv run mblab validate -s "$RUNNER_TEMP/demo"
+          uv run mblab analyze -s "$RUNNER_TEMP/demo"
+          uv run mblab report -s "$RUNNER_TEMP/demo"
+          grep -q "SYNTHETIC DEMO DATA" "$RUNNER_TEMP/demo/reports/report.md"
+
+  minimum-versions:
+    name: Lowest supported dependency versions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
+        with:
+          python-version: "3.11"
+      - name: Install the lowest versions allowed by pyproject.toml
+        run: |
+          uv venv
+          uv pip install --resolution lowest-direct -e ".[dev]"
+      - name: Test
+        run: .venv/bin/python -m pytest -q
+
+  pip-install:
+    name: Plain pip install (as in the README)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+      - name: Install the package (non-editable, so packaging is exercised)
+        run: python -m pip install ".[dashboard]"
+      - name: Run the README quick start
+        run: |
+          cd "$RUNNER_TEMP"
+          mblab --version
+          mblab init my-study
+          mblab plan -s my-study --show 3
+          mblab next -s my-study
+          mblab validate -s my-study
+          mblab report -s my-study
+          mblab demo demo-study
+          mblab analyze -s demo-study

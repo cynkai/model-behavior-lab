@@ -4,6 +4,12 @@ import pytest
 
 from mblab.privacy import scan_text
 
+# Fake credentials are assembled at runtime so the source never contains a
+# literal that secret scanners would flag.
+FAKE_OPENAI = "sk-" + "proj-" + "A" * 24
+FAKE_GITHUB = "gh" + "p_" + "a1" * 18
+FAKE_AWS = "AK" + "IA" + "B" * 16
+
 
 @pytest.mark.parametrize(
     ("text", "kind"),
@@ -12,9 +18,9 @@ from mblab.privacy import scan_text
         ("call 010-1234-5678", "phone number"),
         ("call +82 10 1234 5678", "phone number"),
         ("id 900101-1234567", "resident registration number"),
-        ("sk-proj-ABCDEFGHIJKLMNOPQRSTUVWX", "API key or token"),
-        ("ghp_abcdefghijklmnopqrstuvwxyz0123456789", "API key or token"),
-        ("AKIAABCDEFGHIJKLMNOP", "API key or token"),
+        (FAKE_OPENAI, "API key or token"),
+        (FAKE_GITHUB, "API key or token"),
+        (FAKE_AWS, "API key or token"),
         ("card 4111 1111 1111 1111", "payment card number"),
     ],
 )

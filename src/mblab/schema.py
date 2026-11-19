@@ -101,6 +101,13 @@ class Hypothesis(StrictModel):
     id: Identifier
     statement: str = Field(min_length=1)
     predictions: list[str] = Field(default_factory=list)
+    predicted_pattern: Literal["per_message", "default", "no_difference"] | None = Field(
+        default=None,
+        description=(
+            "Which behavioural pattern the hypothesis predicts for its conditions, so reports "
+            "can count matching assessments. A count is a description, not a test."
+        ),
+    )
 
 
 class SelectionOption(StrictModel):

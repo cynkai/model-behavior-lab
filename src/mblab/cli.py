@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import functools
+import os
+import subprocess
+import sys
 from collections import Counter
 from collections.abc import Callable
 from datetime import datetime, timedelta
@@ -34,6 +37,7 @@ from mblab.formatting import (
 from mblab.grading import export_blind_sheet, import_blind_sheet
 from mblab.plan import generate_plan
 from mblab.records import build_record, condition_instructions, next_pending
+from mblab.report import render_report
 from mblab.schema import PlannedRun, RunRecord
 from mblab.stats import Interval
 from mblab.study import (
@@ -755,6 +759,70 @@ def grade_import(
     console.print(
         f"Imported {len(result.grades)} grade(s); {result.skipped_blank} row(s) without points."
     )
+
+
+# -- commands: report and dashboard ----------------------------------------------------
+
+
+@app.command()
+@_errors
+def report(
+    study: StudyOpt = Path("."),
+    out: Annotated[
+        Path | None, typer.Option(help="Output path (default: <study>/reports/report.md).")
+    ] = None,
+    min_n: Annotated[int, typer.Option(help="Minimum observations per group to compare.")] = 5,
+    confidence: Annotated[float, typer.Option(help="Confidence level for intervals.")] = 0.95,
+) -> None:
+    """Write a Markdown report: question, hypotheses, method, results, limitations."""
+    s = Study.load(study)
+    seed = s.plan.seed if s.plan else 0
+    a = analyze(s, AnalysisSettings(confidence=confidence, min_n=min_n, seed=seed))
+    target = out or study / "reports" / "report.md"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(render_report(a, s), encoding="utf-8")
+    console.print(f"Wrote {target}")
+    if a.synthetic:
+        console.print(f"[bold red]{DEMO_BANNER}[/]")
+    if not a.has_data:
+        console.print("No observations yet: the report contains the design but no results.")
+
+
+@app.command()
+@_errors
+def dashboard(
+    study: StudyOpt = Path("."),
+    port: Annotated[int | None, typer.Option(help="Port for the local server.")] = None,
+    headless: Annotated[bool, typer.Option(help="Do not open a browser window.")] = False,
+) -> None:
+    """Open the local web dashboard (needs the `dashboard` extra)."""
+    try:
+        import streamlit  # noqa: F401
+    except ImportError:
+        raise StudyError(
+            'the dashboard needs Streamlit: pip install "model-behavior-lab[dashboard]"'
+        ) from None
+    Study.load(study)  # fail early with a clear message
+    app_path = Path(__file__).parent / "dashboard" / "app.py"
+    cmd = [
+        sys.executable,
+        "-m",
+        "streamlit",
+        "run",
+        str(app_path),
+        "--browser.gatherUsageStats",
+        "false",
+        "--client.toolbarMode",
+        "minimal",
+    ]
+    if port:
+        cmd += ["--server.port", str(port)]
+    if headless:
+        cmd += ["--server.headless", "true"]
+    root = str(study.resolve())
+    cmd += ["--", "--study", root]
+    console.print(f"Starting the dashboard for {root} (Ctrl+C to stop)…")
+    raise typer.Exit(subprocess.call(cmd, env={**os.environ, "MBLAB_STUDY": root}))
 
 
 # -- commands: demo ------------------------------------------------------------------------

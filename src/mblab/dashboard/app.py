@@ -1,0 +1,707 @@
+"""Model Behavior Lab dashboard (Streamlit).
+
+Run with ``mblab dashboard -s <study-dir>``. Pages:
+
+* Overview — study, hypotheses, progress, validation
+* Run plan & recording — the randomized order, the exact prompt, an entry form
+* Condition comparison — accuracy, response time, labels, override assessments
+* Task-level results — per-task accuracy and every repetition
+* Individual responses — filter and read single runs
+* Methodology & limitations — what is and is not measured, claims ledger
+"""
+
+from __future__ import annotations
+
+import os
+import sys
+from datetime import datetime, timedelta
+from pathlib import Path
+
+import pandas as pd
+import streamlit as st
+from pydantic import ValidationError
+
+from mblab import __version__
+from mblab.analysis import LABEL_CLASS_TEXT, Analysis, analyze, hypothesis_tallies
+from mblab.dashboard import PAGES, charts
+from mblab.demo import DEMO_BANNER
+from mblab.exchange import merge_records
+from mblab.formatting import (
+    COMPARISON_STATUS,
+    METRIC_NAMES,
+    VERDICT_SHORT,
+    interval_text,
+    method_text,
+    metric_value,
+    pct,
+    pct_ci,
+    seconds,
+)
+from mblab.records import build_record, condition_instructions, next_pending
+from mblab.report import scoring_text
+from mblab.stats import Interval
+from mblab.study import Study, StudyError, append_jsonl, format_validation_error
+
+SCOPE = (
+    "These pages describe what the client displayed and how responses behaved in this sample. "
+    "They are not evidence about server-side model routing — see *Methodology & limitations*."
+)
+DOCS = "https://github.com/cynkai/model-behavior-lab/blob/main/docs"
+
+
+def _initial_study_dir() -> str:
+    args = sys.argv[1:]
+    if "--study" in args and args.index("--study") + 1 < len(args):
+        return args[args.index("--study") + 1]
+    return os.environ.get("MBLAB_STUDY", ".")
+
+
+def _stamp(root: Path) -> tuple:
+    names = ("experiment.yaml", "plan.json", "records.jsonl", "grades.jsonl")
+    return tuple((n, (root / n).stat().st_mtime_ns if (root / n).exists() else 0) for n in names)
+
+
+@st.cache_resource(show_spinner=False, max_entries=4)
+def _load(root: str, stamp: tuple) -> tuple[Study, Analysis]:
+    study = Study.load(root)
+    return study, analyze(study)
+
+
+def _mode() -> str | None:
+    try:
+        return st.context.theme.type
+    except Exception:  # pragma: no cover - older Streamlit
+        return None
+
+
+def _table(df: pd.DataFrame, **kwargs) -> None:
+    st.dataframe(df, hide_index=True, width="stretch", **kwargs)
+
+
+def _chart(chart, table: pd.DataFrame, caption: str | None = None) -> None:
+    if chart is None:
+        st.info("Nothing to plot yet for this view.")
+        return
+    # theme=None keeps the chart's own validated palette and config.
+    st.altair_chart(chart, width="stretch", theme=None)
+    if caption:
+        st.caption(caption)
+    with st.expander("Table view"):
+        _table(table)
+
+
+def _banner(a: Analysis) -> None:
+    if a.synthetic:
+        st.error(f"**{DEMO_BANNER}**", icon="⚠️")
+
+
+# -- pages ---------------------------------------------------------------------------------
+
+
+def page_overview(study: Study, a: Analysis) -> None:
+    d = a.definition
+    st.title(d.title)
+    st.caption(
+        f"`{d.experiment_id}` v{d.experiment_version} · service: {d.service} · platform: "
+        f"{d.platform} · method: {d.execution_method}"
+    )
+    _banner(a)
+    planned = len(a.plan.runs) if a.plan else 0
+    recorded = len(a.results)
+    excluded = int(a.results["excluded"].sum()) if recorded else 0
+    cols = st.columns(5)
+    cols[0].metric("Planned runs", planned)
+    cols[1].metric("Recorded", recorded)
+    cols[2].metric("Excluded", excluded)
+    cols[3].metric("Not yet recorded", max(planned - recorded, 0))
+    cols[4].metric(
+        "Errors / warnings", f"{len(a.validation.errors)} / {len(a.validation.warnings)}"
+    )
+    st.subheader("Research question")
+    for q in d.research_questions:
+        st.markdown(f"- {q.strip()}")
+    st.subheader("Hypotheses (pre-registered)")
+    for h in d.hypotheses:
+        lines = [f"- **{h.id}** — {h.statement.strip()}"]
+        lines += [f"    - Prediction: {p}" for p in h.predictions]
+        st.markdown("\n".join(lines))
+    st.subheader("Documented facts")
+    if d.documented_facts:
+        _table(pd.DataFrame([f.model_dump(mode="json") for f in d.documented_facts]))
+    else:
+        st.caption(
+            "None recorded in experiment.yaml. Nothing on these pages is a documented fact about "
+            "the service."
+        )
+    st.subheader("Collection progress")
+    progress = a.conditions[
+        [
+            "condition_id",
+            "model_selection",
+            "message_override",
+            "n_planned",
+            "n_recorded",
+            "n_excluded",
+        ]
+    ].rename(
+        columns={
+            "condition_id": "condition",
+            "model_selection": "default",
+            "message_override": "per-message",
+            "n_planned": "planned",
+            "n_recorded": "recorded",
+            "n_excluded": "excluded",
+        }
+    )
+    _table(progress)
+    env = a.environment
+    st.subheader("Environment")
+    _table(
+        pd.DataFrame(
+            [
+                [
+                    "Client version(s)",
+                    ", ".join(f"{k} ({v})" for k, v in env["client_versions"].items()) or "—",
+                ],
+                ["First run", env["first_run"] or "—"],
+                ["Last run", env["last_run"] or "—"],
+                ["Recorders", ", ".join(env["recorders"]) or "—"],
+            ],
+            columns=["item", "value"],
+        )
+    )
+    st.subheader("Validation")
+    issues = [i for i in a.validation.issues if i.severity != "info"]
+    if not issues:
+        st.success("No errors or warnings.")
+    for issue in issues:
+        (st.error if issue.severity == "error" else st.warning)(f"`{issue.code}` {issue.message}")
+    notes = [i for i in a.validation.issues if i.severity == "info"]
+    if notes:
+        with st.expander(f"{len(notes)} note(s)"):
+            for issue in notes:
+                st.markdown(f"- `{issue.code}` {issue.message}")
+
+
+def page_record(study: Study, a: Analysis) -> None:
+    d = a.definition
+    st.title("Run plan & recording")
+    _banner(a)
+    if a.plan is None:
+        st.warning("No plan yet. Run `mblab plan -s <study>` first.")
+        return
+    recorded = {r.run_id: r for r in study.records}
+    table = pd.DataFrame(
+        [
+            {
+                "#": run.sequence,
+                "run": run.run_id,
+                "block": run.block,
+                "default": d.option_label(run.model_selection),
+                "per-message": d.option_label(run.message_override),
+                "task": run.task_id,
+                "status": (
+                    "excluded"
+                    if run.run_id in recorded and recorded[run.run_id].excluded
+                    else "recorded"
+                    if run.run_id in recorded
+                    else "pending"
+                ),
+            }
+            for run in sorted(a.plan.runs, key=lambda r: r.sequence)
+        ]
+    )
+    nxt = next_pending(a.plan, set(recorded))
+    st.subheader("Next run")
+    if nxt is None:
+        st.success("All planned runs are recorded.")
+    pending_ids = [r for r in table["run"] if r not in recorded]
+    choices = pending_ids + [r for r in table["run"] if r in recorded]
+    if not choices:
+        return
+    run_id = st.selectbox(
+        "Run",
+        choices,
+        index=0,
+        key=f"run-select-{nxt.run_id if nxt else 'done'}",
+        help="Defaults to the next pending run in the randomized order.",
+    )
+    run = a.plan.by_run_id()[run_id]
+    task = d.task(run.task_id)
+    st.markdown(f"**#{run.sequence} · {run.run_id}** — task {task.id}: {task.title}")
+    for number, step in enumerate(condition_instructions(d, run), start=1):
+        st.markdown(f"{number}. {step}")
+    st.caption("Prompt — send exactly this (use the copy button):")
+    st.code(task.prompt, language=None, wrap_lines=True)
+
+    if a.synthetic:
+        st.info(
+            "This is a synthetic demo study; recording is disabled so demo and real data never mix."
+        )
+    else:
+        _record_form(study, a, run_id, run_id in recorded)
+
+    st.subheader("Plan")
+    st.caption(
+        f"Seed {a.plan.seed}, strategy `{a.plan.strategy}`, generated {a.plan.generated_at:%Y-%m-%d}."
+    )
+    _table(table)
+
+
+def _record_form(study: Study, a: Analysis, run_id: str, exists: bool) -> None:
+    d = a.definition
+    run = a.plan.by_run_id()[run_id]
+    prev = max(study.records, key=lambda r: r.recorded_at or r.timestamp, default=None)
+    if exists:
+        st.warning("This run already has a record. Saving will replace it.")
+    flash = st.session_state.pop("mblab_flash", None)
+    if flash:
+        st.success(flash)
+    with st.form(f"record-{run_id}", clear_on_submit=False):
+        st.markdown("**Record what the client showed**")
+        c1, c2 = st.columns(2)
+        status = c1.selectbox("Response status", ["completed", "error", "refused", "incomplete"])
+        client_version = c2.text_input(
+            "Client (app) version", value=prev.client_version if prev else ""
+        )
+        response = st.text_area("Response text (paste exactly)", height=200)
+        c3, c4 = st.columns(2)
+        label = c3.text_input("Model label displayed (blank if none)")
+        location = c4.text_input("Where was the label displayed?")
+        c5, c6 = st.columns(2)
+        thinking = c5.selectbox("Thinking indicator", ["unknown", "shown", "not_shown"])
+        thinking_text = c6.text_input("Thinking text as shown (e.g. 'Thought for 1m 12s')")
+        c7, c8 = st.columns(2)
+        latency_text = c7.text_input("Stopwatch seconds (blank = not measured)")
+        sent_text = c8.text_input(
+            "Time sent (ISO 8601; blank = now minus stopwatch seconds)", value=""
+        )
+        conf_values: dict[str, str] = {}
+        if d.confounders:
+            cols = st.columns(min(3, len(d.confounders)))
+            for i, conf in enumerate(d.confounders):
+                default = (prev.confounders.get(conf.id) if prev else None) or (
+                    "unknown" if "unknown" in conf.allowed_values else conf.allowed_values[0]
+                )
+                conf_values[conf.id] = cols[i % len(cols)].selectbox(
+                    conf.question,
+                    conf.allowed_values,
+                    index=conf.allowed_values.index(default)
+                    if default in conf.allowed_values
+                    else 0,
+                )
+        new_conversation = st.checkbox("Sent in a new conversation", value=True)
+        deviation = st.text_input(
+            "Protocol deviation (blank if none — a deviation excludes the run)"
+        )
+        notes = st.text_input("Notes")
+        recorder = st.text_input(
+            "Recorder id (pseudonym)", value=(prev.recorded_by if prev and prev.recorded_by else "")
+        )
+        submitted = st.form_submit_button("Save record", type="primary")
+    if not submitted:
+        return
+    try:
+        latency = float(latency_text.replace(",", ".")) if latency_text.strip() else None
+        if sent_text.strip():
+            sent = datetime.fromisoformat(sent_text.strip())
+        else:
+            sent = datetime.now().astimezone().replace(microsecond=0) - timedelta(
+                seconds=round(latency or 0)
+            )
+        record = build_record(
+            run,
+            d,
+            a.plan,
+            client_version=client_version.strip() or "unknown",
+            timestamp=sent,
+            response_status=status,
+            response_text=response,
+            observed_model_label=label,
+            observed_label_location=location,
+            thinking_indicator=thinking,
+            thinking_text=thinking_text,
+            latency_seconds=latency,
+            latency_method="manual_stopwatch" if latency is not None else "not_measured",
+            new_conversation=new_conversation,
+            confounders=conf_values,
+            protocol_deviation=deviation,
+            notes=notes,
+            recorded_by=recorder,
+        )
+    except ValidationError as exc:
+        st.error(f"Not saved: {format_validation_error(exc)}")
+        return
+    except ValueError as exc:
+        st.error(f"Not saved: {exc}")
+        return
+    if exists:
+        merge_records(Study.load(study.root), [record], replace=True, dry_run=False)
+    else:
+        append_jsonl(study.records_path, [record])
+    st.session_state["mblab_flash"] = f"Saved {record.run_id}."
+    st.rerun()
+
+
+def page_conditions(study: Study, a: Analysis) -> None:
+    st.title("Condition comparison")
+    _banner(a)
+    st.caption(SCOPE)
+    if not a.has_scored_data:
+        st.info("No scored responses yet. Charts appear once observations are recorded.")
+        return
+    mode = _mode()
+    conf = int(a.settings.confidence * 100)
+    summary = pd.DataFrame(
+        [
+            {
+                "condition": r.condition_id,
+                "default": r.model_selection,
+                "per-message": r.message_override,
+                "correct / scored": f"{r.n_correct}/{r.n_scored}",
+                "accuracy": pct(r.accuracy),
+                f"{conf}% CI": pct_ci(r.accuracy_low, r.accuracy_high),
+                "success rate": pct(r.success_rate),
+                "format failures": r.n_format_failures,
+                "not completed": r.n_not_completed,
+                "SD across repetitions": pct(r.repetition_accuracy_sd),
+            }
+            for r in a.conditions.itertuples()
+        ]
+    )
+    _chart(
+        charts.accuracy_chart(a.conditions, mode, a.settings.confidence),
+        summary,
+        f"Dots: accuracy; lines: {conf}% Wilson intervals; right: correct/scored. Format failures "
+        "count as incorrect. Intervals treat responses as independent and describe this task set only.",
+    )
+    st.subheader("Response time")
+    lat_chart = charts.latency_chart(a.results, a.conditions, a.primary_latency_method, mode)
+    lat_table = pd.DataFrame(
+        [
+            {
+                "condition": r.condition_id,
+                "method": method_text(r.latency_method),
+                "n": r.n,
+                "median": seconds(r.median),
+                "Q1": seconds(r.q1),
+                "Q3": seconds(r.q3),
+                "min": seconds(r.min),
+                "max": seconds(r.max),
+            }
+            for r in a.latency.itertuples()
+        ]
+    )
+    _chart(
+        lat_chart,
+        lat_table,
+        "Manual stopwatch timings include reaction, network and rendering time. They are not "
+        "comparable with API latency. Methods are never pooled.",
+    )
+    st.subheader("Displayed model labels")
+    _chart(
+        charts.label_chart(a.labels, mode),
+        a.labels.rename(columns=LABEL_CLASS_TEXT),
+        "Labels are what the client displayed, classified against pre-registered labels and "
+        "aliases. They are not a server-side record.",
+    )
+    st.subheader("Per-message selection vs. default")
+    if not a.overrides:
+        st.caption("No condition uses a per-message selection.")
+    for o in a.overrides:
+        kind = "same setting twice" if o.stacked else "per-message differs from default"
+        st.markdown(f"**Condition {o.condition_id}** ({kind})")
+        st.markdown(f"Labels: {o.label_summary}")
+        if o.note:
+            st.caption(o.note)
+            continue
+        rows = [
+            {
+                "metric": m.metric,
+                o.condition_id: metric_value(m.condition_value, m.unit),
+                f"default-only ref ({o.default_ref})": metric_value(m.default_ref_value, m.unit),
+                f"per-message ref ({o.override_ref})": metric_value(m.override_ref_value, m.unit),
+                f"vs default ref [{conf}% CI]": interval_text(m.vs_default, m.unit),
+                f"vs per-message ref [{conf}% CI]": "—"
+                if o.stacked
+                else interval_text(m.vs_override, m.unit),
+                "assessment": VERDICT_SHORT[m.verdict],
+            }
+            for m in o.metrics
+        ]
+        _table(pd.DataFrame(rows))
+        with st.expander("What the assessments mean"):
+            for m in o.metrics:
+                st.markdown(f"- *{m.metric}*: {m.explanation}")
+    tallies = hypothesis_tallies(a)
+    if tallies:
+        st.subheader("Hypothesis tallies")
+        for tally in tallies:
+            st.markdown(f"- {tally.sentence()}")
+    st.subheader("Pairwise differences (descriptive)")
+    if a.comparisons.empty:
+        st.caption("Not enough data.")
+    else:
+        rows = []
+        for r in a.comparisons.itertuples():
+            iv = None if pd.isna(r.difference) else Interval(r.difference, r.low, r.high)
+            unit = "proportion" if r.metric == "accuracy" else "seconds"
+            rows.append(
+                {
+                    "metric": METRIC_NAMES[r.metric],
+                    "first": r.condition_a,
+                    "second": r.condition_b,
+                    "n": f"{r.n_a}/{r.n_b}",
+                    f"first − second [{conf}% CI]": interval_text(iv, unit),
+                    "status": COMPARISON_STATUS[r.status],
+                }
+            )
+        _table(pd.DataFrame(rows))
+        st.caption("Descriptive intervals, not significance tests; some will exclude 0 by chance.")
+
+
+def page_tasks(study: Study, a: Analysis) -> None:
+    st.title("Task-level results")
+    _banner(a)
+    if not a.has_data:
+        st.info("No observations recorded yet.")
+        return
+    mode = _mode()
+    task_table = pd.DataFrame(
+        [
+            {
+                "task": r.task_id,
+                "title": r.task_title,
+                "difficulty": r.difficulty,
+                "condition": r.condition_id,
+                "correct / scored": f"{r.n_correct}/{r.n_scored}" if r.n_scored else "—",
+                "accuracy": pct(r.accuracy),
+                "format failures": r.n_format_failures,
+                "distinct answers": r.distinct_answers,
+                "most common answer share": pct(r.majority_answer_share),
+            }
+            for r in a.tasks.itertuples()
+        ]
+    )
+    _chart(
+        charts.task_heatmap(a.tasks, mode),
+        task_table,
+        "Empty cells have no scored responses. Difficulty is the task author's prior judgement.",
+    )
+    st.subheader("Repetitions")
+    _chart(
+        charts.repetition_chart(a.grid, mode),
+        a.grid.pivot_table(
+            index="task_id",
+            columns=["condition_id", "repetition"],
+            values="outcome",
+            aggfunc="first",
+        ),
+        "Every planned run is shown, including runs not recorded yet, so gaps stay visible.",
+    )
+    st.subheader("By difficulty")
+    _table(
+        pd.DataFrame(
+            [
+                {
+                    "condition": r.condition_id,
+                    "difficulty": r.difficulty,
+                    "correct / scored": f"{r.n_correct}/{r.n_scored}",
+                    "accuracy": pct(r.accuracy),
+                }
+                for r in a.difficulty.itertuples()
+            ]
+        )
+    )
+
+
+def page_responses(study: Study, a: Analysis) -> None:
+    st.title("Individual responses")
+    _banner(a)
+    if a.results.empty:
+        st.info("No observations recorded yet.")
+        return
+    df = a.results
+    c1, c2, c3, c4 = st.columns(4)
+    conds = c1.multiselect("Condition", sorted(df["condition_id"].unique()))
+    tasks = c2.multiselect("Task", sorted(df["task_id"].unique()))
+    outcomes = c3.multiselect("Outcome", sorted(df["outcome"].unique()))
+    query = c4.text_input("Search response text")
+    view = df
+    if conds:
+        view = view[view["condition_id"].isin(conds)]
+    if tasks:
+        view = view[view["task_id"].isin(tasks)]
+    if outcomes:
+        view = view[view["outcome"].isin(outcomes)]
+    if query:
+        view = view[view["response_text"].str.contains(query, case=False, regex=False, na=False)]
+    columns = [
+        "run_id",
+        "sequence",
+        "condition_id",
+        "task_id",
+        "repetition",
+        "outcome",
+        "extracted_answer",
+        "observed_model_label",
+        "label_class",
+        "thinking_text",
+        "latency_seconds",
+        "response_status",
+    ]
+    st.caption(f"{len(view)} of {len(df)} recorded runs")
+    _table(view[columns])
+    if view.empty:
+        return
+    run_id = st.selectbox("Inspect run", list(view["run_id"]))
+    row = view[view["run_id"] == run_id].iloc[0]
+    left, right = st.columns([3, 2])
+    with left:
+        st.caption("Prompt as sent")
+        st.code(row["prompt_text"], language=None, wrap_lines=True)
+        st.caption("Response as recorded")
+        st.code(row["response_text"] or "(empty)", language=None, wrap_lines=True)
+    with right:
+        details = {
+            "condition": row["condition_id"],
+            "outcome": row["outcome"],
+            "score detail": row["score_detail"],
+            "extracted answer": row["extracted_answer"],
+            "displayed label": row["observed_model_label"],
+            "label class": LABEL_CLASS_TEXT.get(row["label_class"], row["label_class"]),
+            "thinking": f"{row['thinking_indicator']} {row['thinking_text'] or ''}".strip(),
+            "response time": f"{seconds(row['latency_seconds'])} ({method_text(row['latency_method'])})",
+            "sent at": row["timestamp"],
+            "client version": row["client_version"],
+            "new conversation": row["new_conversation"],
+            "protocol deviation": row["protocol_deviation"],
+            "notes": row["notes"],
+        }
+        for key in [c for c in row.index if c.startswith("conf_")]:
+            details[key.removeprefix("conf_")] = row[key]
+        _table(
+            pd.DataFrame(
+                [
+                    (k, "—" if v is None or (isinstance(v, float) and pd.isna(v)) else str(v))
+                    for k, v in details.items()
+                ],
+                columns=["field", "value"],
+            )
+        )
+
+
+def page_methodology(study: Study, a: Analysis) -> None:
+    d = a.definition
+    st.title("Methodology & limitations")
+    _banner(a)
+    st.markdown(
+        "**The question this tool answers:** *what did we actually measure, and how far can "
+        "the result be trusted?*"
+    )
+    c1, c2 = st.columns(2)
+    with c1:
+        st.subheader("Observed directly")
+        st.markdown(
+            "- The prompt as sent and the response text as displayed\n"
+            "- The model label the client displayed (verbatim), if any\n"
+            "- Whether a thinking indicator appeared, and the duration it displayed\n"
+            "- Response time measured by the experimenter (instrument recorded per run)\n"
+            "- Client version, platform, date, and declared confounders"
+        )
+    with c2:
+        st.subheader("Not observable here")
+        for item in d.not_observable or ["Server-side model identity, routing and effort."]:
+            st.markdown(f"- {item}")
+    st.subheader("Claims ledger")
+    names = {
+        "documented_fact": "documented fact",
+        "hypothesis": "hypothesis",
+        "observation": "observation (this sample)",
+        "not_verified": "not verified / not observable",
+    }
+    _table(
+        pd.DataFrame(
+            [(names[c.category], c.text, c.source) for c in a.claims],
+            columns=["category", "statement", "basis"],
+        )
+    )
+    st.subheader("Limitations")
+    for lim in a.limitations:
+        st.markdown(f"- {lim.text}")
+    st.subheader("Scoring rules (pre-registered)")
+    _table(
+        pd.DataFrame(
+            [
+                (t.id, t.title, t.difficulty or "—", scoring_text(t), t.reference_answer or "—")
+                for t in d.tasks
+            ],
+            columns=["task", "title", "difficulty", "rule", "reference answer"],
+        )
+    )
+    st.subheader("Statistics")
+    s = a.settings
+    st.markdown(
+        f"- Proportions: {int(s.confidence * 100)}% Wilson score intervals. Differences of "
+        "proportions: Newcombe hybrid score intervals.\n"
+        f"- Differences of medians: percentile bootstrap, {s.bootstrap_resamples} resamples, "
+        f"seed {s.seed}.\n"
+        f"- Groups with fewer than {s.min_n} observations are not compared.\n"
+        "- Per-message vs. default: a metric can only indicate which selection applied if the two "
+        "reference conditions differ on it. The decision table is in "
+        f"[docs/methodology.md]({DOCS}/methodology.md)."
+    )
+    if d.latency_protocol:
+        st.subheader("Response-time protocol")
+        st.markdown(d.latency_protocol.strip())
+    st.subheader("Reproduction")
+    _table(
+        pd.DataFrame(
+            [
+                ["definition SHA-256", d.sha256()],
+                ["plan seed / strategy", f"{a.plan.seed} / {a.plan.strategy}" if a.plan else "—"],
+                ["tool version", f"model-behavior-lab {__version__}"],
+                ["study directory", str(study.root.resolve())],
+            ],
+            columns=["item", "value"],
+        )
+    )
+    st.caption(f"Full protocol: [docs/experiment-protocol.md]({DOCS}/experiment-protocol.md)")
+
+
+RENDERERS = {
+    "Overview": page_overview,
+    "Run plan & recording": page_record,
+    "Condition comparison": page_conditions,
+    "Task-level results": page_tasks,
+    "Individual responses": page_responses,
+    "Methodology & limitations": page_methodology,
+}
+
+
+def main() -> None:
+    st.set_page_config(page_title="Model Behavior Lab", page_icon="🔬", layout="wide")
+    if "study_dir" not in st.session_state:
+        st.session_state["study_dir"] = _initial_study_dir()
+    with st.sidebar:
+        st.markdown("### Model Behavior Lab")
+        st.caption("Does your AI actually behave as configured?")
+        page = st.radio("Page", PAGES, key="page")
+        st.text_input("Study directory", key="study_dir")
+    root = Path(st.session_state["study_dir"]).expanduser()
+    try:
+        study, analysis = _load(str(root.resolve()), _stamp(root))
+    except StudyError as exc:
+        st.error(str(exc))
+        st.stop()
+    with st.sidebar:
+        if analysis.synthetic:
+            st.error("SYNTHETIC DEMO DATA")
+        else:
+            st.caption(f"{len(analysis.results)} observed records")
+        st.caption(f"model-behavior-lab {__version__}")
+    RENDERERS[page](study, analysis)
+
+
+if __name__ == "__main__":  # Streamlit runs this file as __main__
+    main()

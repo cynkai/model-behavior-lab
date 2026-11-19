@@ -97,7 +97,7 @@ def create_demo_study(root: Path, seed: int = 7, missing: int = 4, force: bool =
     records: list[RunRecord] = []
     clock = DEMO_START
     for run in sorted(plan.runs, key=lambda r: r.sequence):
-        clock += timedelta(minutes=rng.uniform(2, 6))
+        clock += timedelta(seconds=round(rng.uniform(120, 360)))
         if run.run_id in missing_ids:
             continue
         p = params[run.condition_id]
@@ -112,7 +112,7 @@ def create_demo_study(root: Path, seed: int = 7, missing: int = 4, force: bool =
             "latency_seconds": latency,
             "latency_method": "manual_stopwatch",
             "recorded_by": "mblab-demo",
-            "recorded_at": clock + timedelta(seconds=latency + 30),
+            "recorded_at": clock + timedelta(seconds=round(latency) + 30),
             "notes": "Synthetic demo record.",
             "confounders": {
                 k: ("unknown" if rng.random() < 0.03 else v) for k, v in defaults.items()

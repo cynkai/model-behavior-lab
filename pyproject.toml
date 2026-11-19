@@ -32,8 +32,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dashboard = ["streamlit>=1.37"]
-dev = ["pytest>=8.0", "ruff>=0.6", "streamlit>=1.37"]
+dashboard = ["streamlit>=1.67"]
+dev = ["pytest>=8.0", "ruff>=0.6", "streamlit>=1.67", "vl-convert-python>=1.7"]
 
 [project.scripts]
 mblab = "mblab.cli:app"

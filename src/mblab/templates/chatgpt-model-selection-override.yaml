@@ -33,6 +33,7 @@ hypotheses:
       When the per-message selection differs from the default selection, the
       observable properties of the response correspond to the per-message
       selection.
+    predicted_pattern: per_message
     predictions:
       - "Client-displayed model labels in C name Pro and in D name Instant."
       - "On behavioural proxies (accuracy, response time, thinking indicator), C resembles B and D resembles A."
@@ -40,6 +41,7 @@ hypotheses:
     statement: >-
       When the per-message selection differs from the default selection, the
       observable properties of the response correspond to the default selection.
+    predicted_pattern: default
     predictions:
       - "Client-displayed model labels in C name Instant and in D name Pro."
       - "On behavioural proxies, C resembles A and D resembles B."
@@ -49,6 +51,7 @@ hypotheses:
   #     Choosing the same setting as both the default and the per-message
   #     selection produces behaviour that is not distinguishable from choosing
   #     it once. (Not detecting a difference does not establish equivalence.)
+  #   predicted_pattern: no_difference
 
 # Statements you verified in OFFICIAL documentation, each with its URL and the
 # date you read it. Leave the list empty rather than guessing. Reports keep

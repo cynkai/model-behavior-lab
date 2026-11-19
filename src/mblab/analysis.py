@@ -824,6 +824,75 @@ def assess_overrides(
     return out
 
 
+PATTERN_VERDICT = {
+    "per_message": "consistent_with_per_message",
+    "default": "consistent_with_default",
+    "no_difference": "no_difference_detected",
+}
+PATTERN_TEXT = {
+    "per_message": "per-message selection",
+    "default": "default selection",
+    "no_difference": "no-difference",
+}
+
+
+@dataclass(frozen=True)
+class HypothesisTally:
+    hypothesis_id: str
+    conditions: list[str]
+    predicted_pattern: str | None
+    matching: int | None
+    usable: int
+    counts: dict[str, int]
+
+    def sentence(self) -> str:
+        from mblab.formatting import VERDICT_SHORT  # local import: formatting imports stats only
+
+        parts = ", ".join(
+            f"{n} {VERDICT_SHORT[v]}" for v, n in sorted(self.counts.items(), key=lambda kv: -kv[1])
+        )
+        conds = ", ".join(self.conditions)
+        if self.predicted_pattern is None:
+            return (
+                f"{self.hypothesis_id} (conditions {conds}): metric assessments — {parts}. "
+                f"A descriptive tally, not a test of {self.hypothesis_id}."
+            )
+        return (
+            f"{self.hypothesis_id} predicts the {PATTERN_TEXT[self.predicted_pattern]} pattern "
+            f"for conditions {conds}: {self.matching} of {self.usable} assessments with enough data "
+            f"show it (all assessments: {parts}). A descriptive tally, not a test of "
+            f"{self.hypothesis_id}."
+        )
+
+
+def hypothesis_tallies(analysis: Analysis) -> list[HypothesisTally]:
+    tallies = []
+    for hyp in analysis.definition.hypotheses:
+        conds = [
+            o
+            for o in analysis.overrides
+            if hyp.id in analysis.definition.condition(o.condition_id).hypothesis_ids
+        ]
+        counts = Counter(m.verdict for o in conds for m in o.metrics)
+        if not counts:
+            continue
+        usable = sum(n for v, n in counts.items() if v != "insufficient_data")
+        matching = (
+            counts.get(PATTERN_VERDICT[hyp.predicted_pattern], 0) if hyp.predicted_pattern else None
+        )
+        tallies.append(
+            HypothesisTally(
+                hyp.id,
+                [o.condition_id for o in conds],
+                hyp.predicted_pattern,
+                matching,
+                usable,
+                dict(counts),
+            )
+        )
+    return tallies
+
+
 # -- environment, limitations, claims ----------------------------------------------------
 
 
@@ -880,7 +949,9 @@ def build_limitations(analysis: Analysis) -> list[Limitation]:
             ),
             Limitation(
                 "standard",
-                "Not observable in this experiment: " + "; ".join(d.not_observable)
+                "Not observable in this experiment: "
+                + "; ".join(item.rstrip(". ") for item in d.not_observable)
+                + "."
                 if d.not_observable
                 else "Server-side model identifiers, routing, and hidden reasoning effort are not observable.",
             ),

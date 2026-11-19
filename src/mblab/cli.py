@@ -572,6 +572,13 @@ def run_api(
         float, typer.Option(min=0, help="Minimum seconds between request starts (rate limit).")
     ] = 1.0,
     yes: Annotated[bool, typer.Option("--yes", "-y", help="Send without asking first.")] = False,
+    resend_unrecorded: Annotated[
+        bool,
+        typer.Option(
+            help="Also send runs whose earlier, billed response could not be recorded "
+            "(listed in api-unrecorded.jsonl). They are billed again."
+        ),
+    ] = False,
 ) -> None:
     """Send pending runs of an official_api study through the OpenAI Responses API.
 
@@ -582,10 +589,23 @@ def run_api(
     plan_ = api_runner.check_api_study(s)
     d = s.definition
     assert d.api is not None
-    all_pending = api_runner.pending_runs(plan_, s.recorded_run_ids())
+    held = api_runner.unrecorded_run_ids(s.root, s.recorded_run_ids())
+    if held:
+        err_console.print(
+            f"[yellow]warning:[/] {len(held)} run(s) already returned a billed response that could "
+            f"not be recorded (see {api_runner.UNRECORDED_FILE}): {', '.join(sorted(held))}. "
+            + (
+                "They will be sent again (--resend-unrecorded)."
+                if resend_unrecorded
+                else "They are held back; pass --resend-unrecorded to pay for them again."
+            )
+        )
+    all_pending = api_runner.pending_runs(
+        plan_, s.recorded_run_ids(), held=frozenset() if resend_unrecorded else held
+    )
     runs = all_pending[:limit] if limit else all_pending
     if not runs:
-        console.print("All planned runs are recorded.")
+        console.print("No runs to send: every planned run is recorded or held back.")
         return
     efforts = Counter(d.option(r.model_selection).reasoning_effort for r in runs)
     console.print(
@@ -644,9 +664,13 @@ def run_api(
             min_interval=min_interval,
             on_record=lambda o: console.print(_api_outcome_line(o, len(plan_.runs)), markup=False),
             on_retry=on_retry,
+            resend_unrecorded=resend_unrecorded,
         )
     except KeyboardInterrupt:
-        err_console.print("Interrupted. Saved records are kept; run the command again to resume.")
+        err_console.print(
+            "Interrupted. Every response received so far was written first; run the command "
+            "again to resume."
+        )
         raise typer.Exit(130) from None
     console.print(f"Recorded {len(result.recorded)} run(s) to {s.records_path}.")
     _print_validation_summary(validate_study(Study.load(study)))
@@ -790,7 +814,7 @@ def _print_api_table(a: Analysis) -> None:
         "echoed effort ≠ sent",
         "incomplete",
         "reasoning tokens median [Q1–Q3]",
-        "input / output tokens total",
+        "input / output tokens, all recorded responses",
         title="Values reported by the API (as returned, not verified)",
     )
     for r in a.api.itertuples():

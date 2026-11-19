@@ -433,7 +433,7 @@ def page_conditions(study: Study, a: Analysis) -> None:
                         "reasoning tokens median": tokens(r.reasoning_tokens_median),
                         "Q1–Q3": f"{tokens(r.reasoning_tokens_q1)}–{tokens(r.reasoning_tokens_q3)}",
                         "n": r.reasoning_tokens_n,
-                        "input / output tokens total": (
+                        "input / output tokens, all recorded responses": (
                             f"{tokens(r.input_tokens_sum)} / {tokens(r.output_tokens_sum)}"
                         ),
                     }

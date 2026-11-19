@@ -251,7 +251,12 @@ with reasoning tokens billed as output. Higher effort tends to use more tokens; 
 `max_output_tokens` cap bounds each request but responses that reach it are recorded as
 incomplete. A request that times out on the client may still be billed and is retried.
 The tool does not price anything — prices change — but reports list token totals per
-condition so cost can be computed from the provider's price list.
+condition so cost can be computed from the provider's price list. Totals cover every recorded
+response, excluded runs included, because all of them were billed. A billed response
+that cannot be turned into a record (for example an unexpected status) is listed in
+`api-unrecorded.jsonl` with its id and token counts, reported as a limitation, and its
+run is held back from resending unless `--resend-unrecorded` is given. Ctrl+C waits
+until a received response is written, and only one `mblab run-api` may run per study.
 
 **What it cannot show.** API-reported values are the provider's figures, recorded as
 returned, not independently verified. How the provider applies an effort setting

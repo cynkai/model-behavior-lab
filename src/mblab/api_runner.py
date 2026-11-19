@@ -18,12 +18,17 @@ Rules this module keeps (see docs/methodology.md §12):
 
 from __future__ import annotations
 
+import contextlib
+import json
 import os
 import re
+import signal
+import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from mblab.records import build_record
@@ -31,6 +36,9 @@ from mblab.schema import ApiReported, ExperimentDefinition, PlannedRun, RunPlan,
 from mblab.study import Study, StudyError, append_jsonl
 
 API_KEY_ENV = "OPENAI_API_KEY"
+#: Billed responses that arrived but could not be recorded (one JSON object per line).
+UNRECORDED_FILE = "api-unrecorded.jsonl"
+LOCK_FILE = ".run-api.lock"
 INSTALL_HINT = 'the official_api runner needs the OpenAI SDK: pip install "model-behavior-lab[api]"'
 #: Retries after a transient error (rate limit, connection problem, 5xx).
 DEFAULT_MAX_RETRIES = 2
@@ -79,9 +87,96 @@ def build_request(definition: ExperimentDefinition, run: PlannedRun) -> dict[str
     return request
 
 
-def pending_runs(plan: RunPlan, recorded: set[str], limit: int | None = None) -> list[PlannedRun]:
-    runs = [r for r in sorted(plan.runs, key=lambda r: r.sequence) if r.run_id not in recorded]
+def pending_runs(
+    plan: RunPlan,
+    recorded: set[str],
+    limit: int | None = None,
+    held: set[str] | frozenset[str] = frozenset(),
+) -> list[PlannedRun]:
+    """Runs without a record, in plan order. ``held`` runs (a billed response is on file
+    in the unrecorded log) are left out so they are not paid for twice by accident."""
+    runs = [
+        r
+        for r in sorted(plan.runs, key=lambda r: r.sequence)
+        if r.run_id not in recorded and r.run_id not in held
+    ]
     return runs if limit is None else runs[:limit]
+
+
+# -- billed responses that could not be recorded ------------------------------------
+
+
+def read_unrecorded(root: Path) -> list[dict[str, Any]]:
+    path = root / UNRECORDED_FILE
+    if not path.exists():
+        return []
+    entries = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.strip():
+            with contextlib.suppress(json.JSONDecodeError):
+                entries.append(json.loads(line))
+    return entries
+
+
+def unrecorded_run_ids(root: Path, recorded: set[str]) -> set[str]:
+    """Runs with a billed-but-unrecorded response and still no record."""
+    return {e["run_id"] for e in read_unrecorded(root) if e.get("run_id") not in recorded}
+
+
+def _log_unrecorded(root: Path, run: PlannedRun, response: Any, reason: str) -> None:
+    """Keep a trace of a billed response that could not become a record.
+
+    Only identifiers, the status, token counts, and the reason are kept; no text.
+    """
+    entry = {
+        "run_id": run.run_id,
+        "received_at": datetime.now().astimezone().isoformat(),
+        "response_id": _get(response, "id"),
+        "status": _get(response, "status"),
+        "input_tokens": _get(response, "usage", "input_tokens"),
+        "output_tokens": _get(response, "usage", "output_tokens"),
+        "reason": reason,
+    }
+    with (root / UNRECORDED_FILE).open("a", encoding="utf-8", newline="\n") as handle:
+        handle.write(json.dumps(entry, ensure_ascii=False, default=str) + "\n")
+
+
+# -- safety around sending ------------------------------------------------------------
+
+
+@contextlib.contextmanager
+def study_lock(root: Path) -> Iterator[None]:
+    """Refuse a second sender on the same study (it would pay for the same runs twice)."""
+    path = root / LOCK_FILE
+    try:
+        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        raise StudyError(
+            f"another `mblab run-api` seems to be running on this study ({path} exists). "
+            "If none is running, delete that file and try again."
+        ) from None
+    try:
+        os.write(fd, f"{os.getpid()}\n".encode())
+        os.close(fd)
+        yield
+    finally:
+        path.unlink(missing_ok=True)
+
+
+@contextlib.contextmanager
+def defer_interrupt() -> Iterator[None]:
+    """Hold Ctrl+C until a received (and billed) response has been written."""
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+    pending: list[int] = []
+    previous = signal.signal(signal.SIGINT, lambda signum, frame: pending.append(signum))
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGINT, previous)
+    if pending:
+        raise KeyboardInterrupt
 
 
 # -- the SDK ---------------------------------------------------------------------------
@@ -167,6 +262,7 @@ def response_fields(response: Any) -> dict[str, Any]:
         raise ValueError(f"the API returned an unexpected response status {status!r}")
     reported = ApiReported(
         response_id=_get(response, "id"),
+        refusal=redact(refusal) if refusal else None,
         model=_get(response, "model"),
         status=status,
         reasoning_effort=_get(response, "reasoning", "effort"),
@@ -220,6 +316,7 @@ def send_runs(
     on_retry: Callable[[PlannedRun, str, float], None] | None = None,
     sleep: Callable[[float], None] = time.sleep,
     clock: Callable[[], float] = time.monotonic,
+    resend_unrecorded: bool = False,
 ) -> ApiRunResult:
     """Send ``runs`` in order and append a record after each response.
 
@@ -230,61 +327,74 @@ def send_runs(
     definition = study.definition
     client_version = f"openai-python {getattr(sdk, '__version__', 'unknown')}"
     result = ApiRunResult()
-    last_start: float | None = None
-    for run in runs:
-        request = build_request(definition, run)
-        failures: list[str] = []
-        while True:
-            if last_start is not None:
-                wait = min_interval - (clock() - last_start)
-                if wait > 0:
-                    sleep(wait)
-            last_start = clock()
-            sent_at = datetime.now().astimezone()
-            started = time.perf_counter()
-            try:
-                response = client.responses.create(**request)
-            except sdk.OpenAIError as exc:
-                message = redact(f"{type(exc).__name__}: {exc}")
-                if _is_transient(exc, sdk) and len(failures) < max_retries:
-                    failures.append(type(exc).__name__)
-                    delay = retry_wait * 2 ** (len(failures) - 1)
-                    if on_retry:
-                        on_retry(run, message, delay)
-                    sleep(delay)
-                    continue
-                result.stopped_at, result.stop_reason = run, message
-                return result
-            elapsed = time.perf_counter() - started
-            break
-        try:
-            fields = response_fields(response)
-            notes = None
-            if failures:
-                notes = (
-                    f"{len(failures)} earlier attempt(s) failed ({', '.join(failures)}) and were "
-                    "retried; timestamp and latency refer to the final attempt."
-                )
-            record = build_record(
-                run,
-                definition,
-                plan,
-                client_version=client_version,
-                timestamp=sent_at,
-                latency_seconds=round(elapsed, 3),
-                latency_method="client_timer",
-                new_conversation=True,
-                notes=notes,
-                **fields,
-            )
-        except ValueError as exc:  # includes pydantic's ValidationError
-            result.stopped_at = run
-            result.stop_reason = redact(f"response not recorded: {exc}")
-            return result
-        append_jsonl(study.records_path, [record])
-        study.records.append(record)
-        outcome = RunOutcome(run, record, len(failures))
-        result.recorded.append(outcome)
-        if on_record:
-            on_record(outcome)
+    with study_lock(study.root):
+        held = (
+            set() if resend_unrecorded else unrecorded_run_ids(study.root, study.recorded_run_ids())
+        )
+        last_start: float | None = None
+        for run in runs:
+            if run.run_id in held or run.run_id in study.recorded_run_ids():
+                continue  # never pay twice for a run that already has a response
+            request = build_request(definition, run)
+            failures: list[str] = []
+            while True:
+                if last_start is not None:
+                    wait = min_interval - (clock() - last_start)
+                    if wait > 0:
+                        sleep(wait)
+                last_start = clock()
+                sent_at = datetime.now().astimezone()
+                started = time.perf_counter()
+                try:
+                    response = client.responses.create(**request)
+                except sdk.OpenAIError as exc:
+                    message = redact(f"{type(exc).__name__}: {exc}")
+                    if _is_transient(exc, sdk) and len(failures) < max_retries:
+                        failures.append(type(exc).__name__)
+                        delay = retry_wait * 2 ** (len(failures) - 1)
+                        if on_retry:
+                            on_retry(run, message, delay)
+                        sleep(delay)
+                        continue
+                    result.stopped_at, result.stop_reason = run, message
+                    return result
+                elapsed = time.perf_counter() - started
+                break
+            # The response is billed from here on: finish writing it before Ctrl+C acts.
+            with defer_interrupt():
+                try:
+                    fields = response_fields(response)
+                    notes = None
+                    if failures:
+                        notes = (
+                            f"{len(failures)} earlier attempt(s) failed ({', '.join(failures)}) "
+                            "and were retried; timestamp and latency refer to the final attempt."
+                        )
+                    record = build_record(
+                        run,
+                        definition,
+                        plan,
+                        client_version=client_version,
+                        timestamp=sent_at,
+                        latency_seconds=round(elapsed, 3),
+                        latency_method="client_timer",
+                        new_conversation=True,
+                        notes=notes,
+                        **fields,
+                    )
+                except ValueError as exc:  # includes pydantic's ValidationError
+                    reason = redact(f"response not recorded: {exc}")
+                    _log_unrecorded(study.root, run, response, reason)
+                    result.stopped_at = run
+                    result.stop_reason = (
+                        f"{reason}. The billed response is listed in {UNRECORDED_FILE} and the "
+                        "run is held back from resending (use --resend-unrecorded to send it again)"
+                    )
+                    return result
+                append_jsonl(study.records_path, [record])
+                study.records.append(record)
+            outcome = RunOutcome(run, record, len(failures))
+            result.recorded.append(outcome)
+            if on_record:
+                on_record(outcome)
     return result

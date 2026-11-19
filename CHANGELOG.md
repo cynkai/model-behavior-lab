@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- `mblab run-api` no longer loses or re-buys billed responses: responses that cannot be
+  recorded are logged in `api-unrecorded.jsonl` and held back (`--resend-unrecorded`),
+  Ctrl+C waits until a received response is written, and a lock file refuses a second
+  sender on the same study.
+- Refusal content returned next to text is kept in `api_reported.refusal`.
+- API token totals include excluded runs, and unrecorded billed responses are listed as a
+  limitation.
+
+## Unreleased
+
 - Official-API execution method: `mblab run-api` sends the planned runs of an
   `official_api` study through the OpenAI Responses API (`reasoning.effort`) with the
   official SDK — plan order, pacing, retries for transient errors, resumable, `--dry-run`.

@@ -515,6 +515,9 @@ class ApiReported(StrictModel):
     """
 
     response_id: str | None = None
+    refusal: str | None = Field(
+        default=None, description="Refusal content returned alongside (or instead of) text."
+    )
     model: str | None = Field(default=None, description="Model id in the API response.")
     status: str | None = Field(default=None, description="Response status as returned.")
     reasoning_effort: str | None = Field(

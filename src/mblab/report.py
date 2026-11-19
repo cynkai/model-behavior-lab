@@ -456,7 +456,7 @@ def _api_results(a: Analysis) -> list[str]:
                 "Incomplete (reason)",
                 "Reasoning tokens: median [Q1–Q3]",
                 "Median output tokens",
-                "Input / output tokens, total",
+                "Input / output tokens, all recorded responses",
             ],
             rows,
         ),

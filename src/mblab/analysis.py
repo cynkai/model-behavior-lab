@@ -606,10 +606,12 @@ def summarize_api(definition: ExperimentDefinition, results: pd.DataFrame) -> pd
         echoed = sub["api_reasoning_effort"].dropna() if not sub.empty else pd.Series(dtype=object)
         reasoning = describe(sub["api_reasoning_tokens"].dropna().tolist() if not sub.empty else [])
         output = describe(sub["api_output_tokens"].dropna().tolist() if not sub.empty else [])
+        # Token totals count every recorded response, excluded runs too: they were billed.
+        billed = results[results["condition_id"] == cond.id] if not results.empty else results
         both = (
-            sub[sub["api_input_tokens"].notna() & sub["api_output_tokens"].notna()]
-            if not sub.empty
-            else sub
+            billed[billed["api_input_tokens"].notna() & billed["api_output_tokens"].notna()]
+            if not billed.empty
+            else billed
         )
         rows.append(
             {
@@ -1246,6 +1248,19 @@ def build_limitations(analysis: Analysis) -> list[Limitation]:
 def _api_data_limitations(analysis: Analysis) -> list[Limitation]:
     inc = analysis.included
     out: list[Limitation] = []
+    unrecorded = analysis.environment.get("api_unrecorded") or []
+    if unrecorded:
+        tin = sum(e.get("input_tokens") or 0 for e in unrecorded)
+        tout = sum(e.get("output_tokens") or 0 for e in unrecorded)
+        out.append(
+            Limitation(
+                "data",
+                f"{len(unrecorded)} billed response(s) arrived but could not be recorded (listed in "
+                f"api-unrecorded.jsonl; input {tin:,} / output {tout:,} tokens where reported). "
+                "They are not in the token totals, which cover recorded responses only, "
+                "excluded runs included.",
+            )
+        )
     missing = int(inc["api_status"].isna().sum())
     if missing:
         out.append(Limitation("data", f"{missing} included run(s) carry no API-reported values."))
@@ -1379,6 +1394,11 @@ def analyze(study: Study, settings: AnalysisSettings | None = None) -> Analysis:
     primary = measured["latency_method"].mode().iloc[0] if not measured.empty else None
 
     conditions = summarize_conditions(definition, study.plan, results, settings, primary)
+    environment = describe_environment(study, results)
+    if definition.execution_method == "official_api":
+        from mblab.api_runner import read_unrecorded  # local import: optional feature
+
+        environment["api_unrecorded"] = read_unrecorded(study.root)
     labels = summarize_labels(definition, results)
     analysis = Analysis(
         definition=definition,
@@ -1394,7 +1414,7 @@ def analyze(study: Study, settings: AnalysisSettings | None = None) -> Analysis:
         labels=labels,
         comparisons=pairwise_comparisons(definition, results, settings, primary),
         overrides=assess_overrides(definition, results, labels, settings, primary),
-        environment=describe_environment(study, results),
+        environment=environment,
         api=summarize_api(definition, results),
         validation=validate_study(study),
         primary_latency_method=primary,

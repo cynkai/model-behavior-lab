@@ -557,3 +557,96 @@ def test_cli_manual_entry_is_refused_for_api_studies(api_study):
 def test_cli_run_api_refuses_ui_studies(study_dir, fake):
     result = runner.invoke(app, ["run-api", "-s", str(study_dir), "--dry-run"], env=ENV)
     assert result.exit_code == 2 and "official_api" in result.output
+
+
+# -- billed responses are never silently lost or paid for twice -------------------------
+
+
+def test_unrecordable_response_is_logged_and_held_back(api_study, fake):
+    fake.client.script = [make_response(status="in_progress")]
+    result = _send(api_study, fake, limit=1)
+    assert "held back" in result.stop_reason
+    (entry,) = api_runner.read_unrecorded(api_study)
+    first = result.stopped_at.run_id
+    assert entry["run_id"] == first and entry["response_id"] == "resp_test"
+    assert entry["input_tokens"] == 100 and "text" not in entry
+
+    calls = len(fake.client.calls)
+    study = Study.load(api_study)
+    held = api_runner.unrecorded_run_ids(api_study, study.recorded_run_ids())
+    assert held == {first}
+    runs = api_runner.pending_runs(study.require_plan(), study.recorded_run_ids(), 1, held)
+    assert runs[0].run_id != first
+    # Even if the caller passes the held run, send_runs refuses to pay for it again ...
+    held_run = study.require_plan().by_run_id()[first]
+    api_runner.send_runs(
+        study, [held_run], client=fake.client, sdk=fake.module, sleep=lambda s: None
+    )
+    assert len(fake.client.calls) == calls
+    # ... unless resending is asked for explicitly.
+    api_runner.send_runs(
+        study,
+        [held_run],
+        client=fake.client,
+        sdk=fake.module,
+        sleep=lambda s: None,
+        resend_unrecorded=True,
+    )
+    assert len(fake.client.calls) == calls + 1
+    assert first in Study.load(api_study).recorded_run_ids()
+
+
+def test_unrecorded_responses_appear_in_limitations(api_study, fake):
+    fake.client.script = [make_response(status="in_progress"), make_response()]
+    _send(api_study, fake, limit=1)
+    _send(api_study, fake, limit=2)  # the held run is skipped, the next one is recorded
+    a = analyze(Study.load(api_study))
+    assert any("could not be recorded" in lim.text for lim in a.limitations)
+
+
+def test_ctrl_c_waits_until_the_record_is_written(api_study, fake, monkeypatch):
+    import signal
+
+    original = api_runner.build_record
+
+    def interrupted_build(*args, **kwargs):
+        signal.raise_signal(signal.SIGINT)  # Ctrl+C after the response arrived
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(api_runner, "build_record", interrupted_build)
+    with pytest.raises(KeyboardInterrupt):
+        _send(api_study, fake, limit=2)
+    assert len(Study.load(api_study).records) == 1  # written before the interrupt acted
+    assert len(fake.client.calls) == 1
+
+
+def test_second_sender_is_refused(api_study, fake):
+    with (
+        api_runner.study_lock(api_study),
+        pytest.raises(StudyError, match="another `mblab run-api`"),
+    ):
+        _send(api_study, fake, limit=1)
+    assert fake.client.calls == []
+    assert not (api_study / api_runner.LOCK_FILE).exists()
+    _send(api_study, fake, limit=1)  # the lock is released afterwards
+    assert len(fake.client.calls) == 1
+
+
+def test_refusal_is_kept_alongside_text(api_study, fake):
+    fake.client.script = [make_response("Partial answer.", refusal="I can't continue.")]
+    _send(api_study, fake, limit=1)
+    (rec,) = Study.load(api_study).records
+    assert rec.response_status == "completed"
+    assert rec.response_text == "Partial answer."
+    assert rec.api_reported.refusal == "I can't continue."
+
+
+def test_token_totals_include_excluded_runs(api_study, fake):
+    _send(api_study, fake, limit=2)
+    study = Study.load(api_study)
+    first = study.records[0].model_copy(update={"protocol_deviation": "test exclusion"})
+    from mblab.study import write_jsonl
+
+    write_jsonl(study.records_path, [first, *study.records[1:]])
+    a = analyze(Study.load(api_study))
+    assert int(a.api["input_tokens_sum"].fillna(0).sum()) == 200

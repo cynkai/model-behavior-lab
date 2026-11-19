@@ -73,7 +73,12 @@ basis. Generated text follows fixed wording rules:
 - A definition is rejected unless every automatically scored task has a reference answer
   that passes its own scoring rule.
 - Label aliases (`observed_label_aliases`) are fixed in advance, so deciding which
-  displayed text "counts as Pro" cannot be done after seeing the data.
+  displayed text "counts as Pro" cannot be done after seeing the data. They are chosen
+  from a **pilot study** (`mblab pilot`): a separate directory with its own
+  `experiment_id` and `pilot: true`, whose records are labelled PILOT everywhere and are
+  rejected by validation if copied into the main study. `mblab labels` lists the texts
+  the pilot displayed, verbatim; on a non-pilot study it warns that changing aliases now
+  would be post-hoc.
 
 ## 5. Randomization
 

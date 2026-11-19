@@ -110,7 +110,10 @@ mblab dashboard -s demo-study    # opens http://localhost:8501
 ```bash
 mblab init my-study              # creates my-study/experiment.yaml from the template
 # Edit my-study/experiment.yaml: set `platform`, and copy the option labels exactly
-# as your app shows them. Settle the definition before collecting any data.
+# as your app shows them.
+mblab pilot -s my-study          # a separate 24-run pilot study: my-study-pilot/
+mblab labels -s my-study-pilot   # after the pilot: every label the app displayed, verbatim
+# Fix labels and observed_label_aliases in my-study/experiment.yaml, then settle it.
 mblab plan -s my-study           # 72 runs in a seeded random order
 mblab next -s my-study --copy    # what to set in the app, plus the exact prompt (copied)
 mblab record -s my-study         # type in what the app showed, run by run
@@ -134,6 +137,8 @@ Every command takes `--study/-s DIR` (default: the current directory, or `$MBLAB
 | Command | What it does |
 |---|---|
 | `mblab init DIR` | Create a study directory with `experiment.yaml` from a template |
+| `mblab pilot` | Create a separate pilot study (`<study>-pilot`, one repetition) to try the protocol and see which labels the client displays |
+| `mblab labels` | List every displayed model label verbatim, with conditions, places shown, and the option it matches |
 | `mblab plan` | Generate the randomized run order (`plan.json`), with the definition hash and snapshot |
 | `mblab status` | Progress per condition, the next run, a validation summary |
 | `mblab next [--copy]` | Show the next run: what to set in the client and the exact prompt |

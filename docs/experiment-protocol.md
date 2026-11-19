@@ -30,10 +30,38 @@ neutral experiment prompts in fresh conversations.
    - `documented_facts`: add only statements you verified in official documentation, with
      the URL and the date you read it. Leave the list empty otherwise.
    - Optional extra conditions (for example *Extra High + Extra High*): add them now.
-3. Do not change tasks, prompts, scoring rules, or hypotheses from here on. If you must,
-   bump `experiment_version` and treat the result as a new study.
-4. `mblab plan -s my-study`. Note the definition hash it prints; it identifies exactly
+3. Run a pilot (§1a) to see which labels the app actually displays, and settle
+   `label` and `observed_label_aliases` from it.
+4. Do not change tasks, prompts, scoring rules, labels, aliases, or hypotheses from here
+   on. If you must, bump `experiment_version` and treat the result as a new study.
+5. `mblab plan -s my-study`. Note the definition hash it prints; it identifies exactly
    what you pre-registered.
+
+## 1a. Pilot block (before the real study)
+
+Which text the app shows next to a response — and where — is easiest to learn by trying.
+But choosing aliases after seeing the real study's data is a post-hoc change. A pilot
+separates the two:
+
+1. After editing `platform` and the labels you can see in the picker:
+   `mblab pilot -s my-study`. This creates `my-study-pilot/` — a copy of the definition
+   with `experiment_id` `…-pilot`, `pilot: true`, one repetition (24 runs), and its own
+   plan. Use `--repetitions` for more.
+2. Run it exactly as in §2–§3 (`mblab next -s my-study-pilot --copy`, `mblab record …`).
+   It is also a rehearsal: timing, copying responses, finding the app version.
+3. `mblab labels -s my-study-pilot` lists every label the app displayed, verbatim, with
+   the conditions and places it appeared and which option it matches. Texts that match
+   no option are what the analysis would report as *unrecognized*.
+4. Edit `my-study/experiment.yaml`: correct each option's `label` and add the texts the
+   app shows for that option to `observed_label_aliases`. Write down anything else the
+   pilot taught you (a notice that appears, a slow option) under protocol notes.
+5. Continue with step 4 of §1 and plan the main study.
+
+Pilot records are real observations but never part of the results: reports and the
+dashboard label them PILOT, and `mblab validate` rejects them if they are copied into the
+main study (their `experiment_id` does not match its plan). Keep the pilot directory: it
+documents how the labels and aliases were chosen. Do not reuse the same responses in
+the main study — run its plan from the start.
 
 ## 2. Account and app settings
 

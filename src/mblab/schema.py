@@ -11,6 +11,12 @@ Design rules
 * UI observations and official-API measurements are different execution
   methods. One experiment uses exactly one method, and records are checked
   against it, so the two kinds of data are never pooled by accident.
+* Values an official API reports (model id, token usage) live in one optional
+  ``api_reported`` object that is only valid for ``official_api`` records. They
+  are copied as returned; a value the API did not return stays ``None``.
+* Fields added for ``official_api`` are left out of the serialized form while
+  unset, so the definition hash of a ``manual_ui`` study, and its records, are
+  byte-for-byte what they were before those fields existed.
 """
 
 from __future__ import annotations
@@ -27,6 +33,7 @@ from pydantic import (
     ConfigDict,
     Field,
     field_validator,
+    model_serializer,
     model_validator,
 )
 
@@ -51,6 +58,10 @@ NormalizeStep = Literal[
     "remove_whitespace",
     "strip_edge_punctuation",
 ]
+#: ``reasoning.effort`` values accepted by the OpenAI Responses API, as listed by
+#: the official SDK's ``ReasoningEffort`` type. Not every model accepts every value;
+#: the API rejects an unsupported one, and `mblab run-api` then stops.
+ReasoningEffort = Literal["none", "minimal", "low", "medium", "high", "xhigh", "max"]
 
 #: Latency methods that are meaningful for each execution method. A stopwatch
 #: reading from a phone and a client-side API timer are different instruments.
@@ -82,6 +93,14 @@ class StrictModel(BaseModel):
 def normalize_label(text: str) -> str:
     """Case- and whitespace-insensitive form used to compare UI labels."""
     return " ".join(text.split()).casefold()
+
+
+def _drop_unset(data: dict[str, Any], *names: str) -> dict[str, Any]:
+    """Remove official_api-only keys whose value is None (see the module docstring)."""
+    for name in names:
+        if data.get(name) is None:
+            data.pop(name, None)
+    return data
 
 
 # ---------------------------------------------------------------------------
@@ -122,6 +141,14 @@ class SelectionOption(StrictModel):
             "Fixed in advance so label matching is not decided after seeing the data."
         ),
     )
+    reasoning_effort: ReasoningEffort | None = Field(
+        default=None,
+        description="official_api only: the reasoning.effort value sent for this option.",
+    )
+
+    @model_serializer(mode="wrap")
+    def _serialize(self, handler: Any) -> dict[str, Any]:
+        return _drop_unset(handler(self), "reasoning_effort")
 
     def matches_label(self, observed: str) -> bool:
         wanted = {normalize_label(self.label)} | {
@@ -239,6 +266,18 @@ class Confounder(StrictModel):
         return values
 
 
+class ApiSettings(StrictModel):
+    """How an official_api study calls the provider. Pre-registered like everything else."""
+
+    provider: Literal["openai"] = Field(description="Only the OpenAI Responses API is implemented.")
+    model: str = Field(min_length=1, description="Model id sent with every request.")
+    max_output_tokens: int | None = Field(
+        default=None,
+        ge=1,
+        description="Upper bound on output tokens per request, reasoning tokens included.",
+    )
+
+
 class Randomization(StrictModel):
     seed: int
     strategy: RandomizationStrategy = "blocked_by_repetition"
@@ -273,13 +312,57 @@ class ExperimentDefinition(StrictModel):
     randomization: Randomization
     confounders: list[Confounder] = Field(default_factory=list)
     latency_protocol: str | None = None
+    api: ApiSettings | None = Field(
+        default=None, description="Required for official_api studies, not allowed otherwise."
+    )
     demo: bool = Field(
         default=False, description="True only for synthetic demo studies created by `mblab demo`."
     )
 
+    @model_serializer(mode="wrap")
+    def _serialize(self, handler: Any) -> dict[str, Any]:
+        return _drop_unset(handler(self), "api")
+
+    def _execution_problems(self) -> list[str]:
+        problems: list[str] = []
+        if self.execution_method == "official_api":
+            if self.api is None:
+                problems.append("execution_method 'official_api' needs an `api` section")
+            efforts: dict[str, str] = {}
+            for opt in self.selection_options:
+                if opt.reasoning_effort is None:
+                    problems.append(
+                        f"selection option '{opt.id}': official_api needs reasoning_effort"
+                    )
+                elif opt.reasoning_effort in efforts:
+                    problems.append(
+                        f"selection options '{efforts[opt.reasoning_effort]}' and '{opt.id}' "
+                        f"send the same reasoning_effort '{opt.reasoning_effort}'"
+                    )
+                else:
+                    efforts[opt.reasoning_effort] = opt.id
+            for cond in self.conditions:
+                if cond.message_override is not None:
+                    problems.append(
+                        f"condition '{cond.id}': message_override is a client UI setting and is "
+                        "not valid for official_api"
+                    )
+        else:
+            if self.api is not None:
+                problems.append(
+                    "the `api` section is only valid for execution_method 'official_api'"
+                )
+            for opt in self.selection_options:
+                if opt.reasoning_effort is not None:
+                    problems.append(
+                        f"selection option '{opt.id}': reasoning_effort is only valid for "
+                        "execution_method 'official_api'"
+                    )
+        return problems
+
     @model_validator(mode="after")
     def _check_references(self) -> ExperimentDefinition:
-        problems: list[str] = []
+        problems: list[str] = self._execution_problems()
         for kind, ids in (
             ("selection option", [o.id for o in self.selection_options]),
             ("condition", [c.id for c in self.conditions]),
@@ -414,8 +497,42 @@ class RunPlan(StrictModel):
 # ---------------------------------------------------------------------------
 
 
+class ApiReported(StrictModel):
+    """Values the official API returned for one request, copied as returned.
+
+    ``None`` means the API did not return the value. Nothing here is derived:
+    for example ``total_tokens`` is not computed from the other counts.
+    """
+
+    response_id: str | None = None
+    model: str | None = Field(default=None, description="Model id in the API response.")
+    status: str | None = Field(default=None, description="Response status as returned.")
+    reasoning_effort: str | None = Field(
+        default=None, description="reasoning.effort echoed in the API response."
+    )
+    service_tier: str | None = None
+    incomplete_reason: str | None = None
+    error: str | None = Field(
+        default=None, description="Error code and message of a failed response."
+    )
+    input_tokens: int | None = Field(default=None, ge=0)
+    cached_input_tokens: int | None = Field(default=None, ge=0)
+    output_tokens: int | None = Field(default=None, ge=0)
+    reasoning_tokens: int | None = Field(default=None, ge=0)
+    total_tokens: int | None = Field(default=None, ge=0)
+
+
+#: Fields that describe what a client UI displayed; an API record has none of them.
+CLIENT_DISPLAY_FIELDS = (
+    "observed_model_label",
+    "observed_label_location",
+    "thinking_text",
+    "thinking_seconds",
+)
+
+
 class RunRecord(StrictModel):
-    """One observed run. Only what the experimenter saw or measured."""
+    """One observed run. Only what the experimenter saw or measured, or the API returned."""
 
     schema_version: Literal[1] = 1
 
@@ -460,6 +577,13 @@ class RunRecord(StrictModel):
     recorded_by: str | None = None
     recorded_at: AwareDatetime | None = None
 
+    # Reported by the official API (official_api records only).
+    api_reported: ApiReported | None = None
+
+    @model_serializer(mode="wrap")
+    def _serialize(self, handler: Any) -> dict[str, Any]:
+        return _drop_unset(handler(self), "api_reported")
+
     @field_validator(
         "observed_model_label",
         "observed_label_location",
@@ -497,11 +621,28 @@ class RunRecord(StrictModel):
                 f"latency_method '{self.latency_method}' is not valid for "
                 f"execution_method '{self.execution_method}' (allowed: {sorted(allowed)})"
             )
+        if self.execution_method == "official_api":
+            shown = [f for f in CLIENT_DISPLAY_FIELDS if getattr(self, f) is not None]
+            if self.thinking_indicator != "unknown":
+                shown.append("thinking_indicator")
+            if shown:
+                raise ValueError(
+                    f"{', '.join(shown)}: client-display fields are not valid for "
+                    "execution_method 'official_api'"
+                )
+        elif self.api_reported is not None:
+            raise ValueError("api_reported is only valid for execution_method 'official_api'")
         if self.thinking_indicator != "shown" and (
             self.thinking_text is not None or self.thinking_seconds is not None
         ):
             raise ValueError("thinking_text/thinking_seconds need thinking_indicator='shown'")
-        if self.response_status == "completed" and not self.response_text.strip():
+        # An empty "completed" response is a typing mistake in a manual record, but a
+        # returned value in an API record (it is then scored as a format failure).
+        if (
+            self.response_status == "completed"
+            and not self.response_text.strip()
+            and self.api_reported is None
+        ):
             raise ValueError("response_status is 'completed' but response_text is empty")
         return self
 

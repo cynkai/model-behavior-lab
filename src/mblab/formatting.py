@@ -21,7 +21,16 @@ COMPARISON_STATUS = {
     "no_clear_difference": "CI includes 0",
     "difference_observed": "CI excludes 0",
 }
-METRIC_NAMES = {"accuracy": "accuracy", "latency_median": "median response time"}
+METRIC_NAMES = {
+    "accuracy": "accuracy",
+    "latency_median": "median response time",
+    "reasoning_tokens_median": "median reported reasoning tokens",
+}
+METRIC_UNITS = {
+    "accuracy": "proportion",
+    "latency_median": "seconds",
+    "reasoning_tokens_median": "tokens",
+}
 
 
 def _missing(value: object) -> bool:
@@ -48,13 +57,19 @@ def seconds(value: float | None) -> str:
 
 def _num(value: float, unit: str) -> str:
     """Signed number with a typographic minus: +12, −3.5, 0."""
-    text = f"{100 * value:+.0f}" if unit == "proportion" else f"{value:+.1f}"
+    if unit == "proportion":
+        text = f"{100 * value:+.0f}"
+    elif unit == "tokens":
+        text = f"{value:+,.0f}"
+    else:
+        text = f"{value:+.1f}"
     text = text.replace("-", "−")
     return text.lstrip("+−") if text.strip("+−0.") == "" else text
 
 
 def signed(value: float, unit: str) -> str:
-    return f"{_num(value, unit)} {'pp' if unit == 'proportion' else 's'}"
+    suffix = {"proportion": "pp", "tokens": "tokens"}.get(unit, "s")
+    return f"{_num(value, unit)} {suffix}"
 
 
 def interval_text(iv: Interval | None, unit: str) -> str:
@@ -64,7 +79,13 @@ def interval_text(iv: Interval | None, unit: str) -> str:
     return f"{signed(iv.estimate, unit)} [{_num(iv.low, unit)}, {_num(iv.high, unit)}]"
 
 
+def tokens(value: float | None) -> str:
+    return "—" if _missing(value) else f"{value:,.0f}"
+
+
 def metric_value(value: float | None, unit: str) -> str:
+    if unit == "tokens":
+        return tokens(value)
     return pct(value) if unit == "proportion" else seconds(value)
 
 

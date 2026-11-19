@@ -11,14 +11,16 @@ from collections.abc import Callable
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Annotated, Any, TypeVar
+from urllib.parse import urlsplit
 
 import pandas as pd
 import typer
 from pydantic import ValidationError
 from rich.console import Console
+from rich.markup import escape
 from rich.table import Table
 
-from mblab import __version__
+from mblab import __version__, api_runner
 from mblab.analysis import LABEL_CLASSES, Analysis, AnalysisSettings, analyze
 from mblab.clipboard import copy_text, paste_text
 from mblab.demo import DEMO_BANNER, create_demo_study
@@ -26,6 +28,7 @@ from mblab.exchange import import_file, merge_records, parse_timezone, write_tem
 from mblab.formatting import (
     COMPARISON_STATUS,
     METRIC_NAMES,
+    METRIC_UNITS,
     VERDICT_SHORT,
     interval_text,
     method_text,
@@ -33,6 +36,7 @@ from mblab.formatting import (
     pct,
     pct_ci,
     seconds,
+    tokens,
 )
 from mblab.grading import export_blind_sheet, import_blind_sheet
 from mblab.plan import generate_plan
@@ -88,7 +92,7 @@ def _errors(func: F) -> F:
         try:
             return func(*args, **kwargs)
         except StudyError as exc:
-            err_console.print(f"[bold red]error:[/] {exc}")
+            err_console.print(f"[bold red]error:[/] {escape(str(exc))}")
             raise typer.Exit(2) from None
 
     return wrapper  # type: ignore[return-value]
@@ -191,7 +195,7 @@ def init(
 ) -> None:
     """Create a study directory with an experiment definition to edit."""
     text = template_text(template)
-    parse_definition(text, template)
+    parsed = parse_definition(text, template)
     directory.mkdir(parents=True, exist_ok=True)
     target = directory / DEFINITION_FILE
     if target.exists() and not force:
@@ -199,6 +203,14 @@ def init(
     target.write_text(text, encoding="utf-8")
     console.print(f"Created {target}")
     console.print("Next steps:")
+    if parsed.execution_method == "official_api":
+        console.print(
+            f"  1. Edit {target}: set `api.model` and the reasoning_effort values it accepts. "
+            "Settle the definition before sending any request."
+        )
+        console.print(f"  2. mblab plan -s {directory}")
+        console.print(f"  3. mblab run-api -s {directory} --dry-run   (free preview)")
+        return
     console.print(
         f"  1. Edit {target}: set `platform`, and copy the option labels exactly as your "
         "client shows them. Settle the definition before collecting data."
@@ -311,7 +323,10 @@ def next_run(
             console.print("[green]Prompt copied to the clipboard.[/]")
         else:
             console.print("[yellow]No clipboard tool found; copy the prompt above by hand.[/]")
-    console.print(f"After the response: mblab record -s {study} --run-id {run.run_id}")
+    if s.definition.execution_method == "official_api":
+        console.print(f"Send it: mblab run-api -s {study}   (preview: --dry-run)")
+    else:
+        console.print(f"After the response: mblab record -s {study} --run-id {run.run_id}")
 
 
 @app.command()
@@ -335,6 +350,11 @@ def record(
 ) -> None:
     """Interactively record one observed run (you type what the client showed)."""
     s = Study.load(study)
+    if s.definition.execution_method == "official_api":
+        raise StudyError(
+            "this is an official_api study; its records are written by `mblab run-api`, "
+            "not typed in"
+        )
     plan_ = s.require_plan()
     if run_id:
         run = plan_.by_run_id().get(run_id)
@@ -458,6 +478,116 @@ def record(
         console.print(f"Next: mblab next -s {study} --copy   (#{nxt.sequence} {nxt.run_id})")
 
 
+def _api_outcome_line(outcome: api_runner.RunOutcome, total: int) -> str:
+    rec, rep = outcome.record, outcome.record.api_reported
+    tokens = "—" if rep is None or rep.reasoning_tokens is None else f"{rep.reasoning_tokens:,}"
+    retried = f", after {outcome.failed_attempts} retry(ies)" if outcome.failed_attempts else ""
+    return (
+        f"#{outcome.run.sequence}/{total} {rec.run_id}: {rec.response_status}, "
+        f"{seconds(rec.latency_seconds)}, reasoning tokens {tokens}{retried}"
+    )
+
+
+@app.command("run-api")
+@_errors
+def run_api(
+    study: StudyOpt = Path("."),
+    limit: Annotated[
+        int | None, typer.Option(min=1, help="Send at most N pending runs, in plan order.")
+    ] = None,
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="Print what would be sent. Sends nothing, writes nothing."),
+    ] = False,
+    min_interval: Annotated[
+        float, typer.Option(min=0, help="Minimum seconds between request starts (rate limit).")
+    ] = 1.0,
+    yes: Annotated[bool, typer.Option("--yes", "-y", help="Send without asking first.")] = False,
+) -> None:
+    """Send pending runs of an official_api study through the OpenAI Responses API.
+
+    Reads the key from OPENAI_API_KEY only and never stores it. Each request is billed by
+    the provider. Runs that already have a record are skipped, so re-running resumes.
+    """
+    s = Study.load(study)
+    plan_ = api_runner.check_api_study(s)
+    d = s.definition
+    assert d.api is not None
+    all_pending = api_runner.pending_runs(plan_, s.recorded_run_ids())
+    runs = all_pending[:limit] if limit else all_pending
+    if not runs:
+        console.print("All planned runs are recorded.")
+        return
+    efforts = Counter(d.option(r.model_selection).reasoning_effort for r in runs)
+    console.print(
+        f"{len(all_pending)} of {len(plan_.runs)} planned runs pending; this would send {len(runs)} request(s) to "
+        f"model {d.api.model} (reasoning.effort: "
+        + ", ".join(f"{e} ×{n}" for e, n in efforts.items())
+        + f"), store=false, max_output_tokens={d.api.max_output_tokens or 'not set'}."
+    )
+    base_url = os.environ.get("OPENAI_BASE_URL", "").strip()
+    if base_url:
+        host = urlsplit(base_url).hostname or "?"
+        err_console.print(
+            f"[yellow]warning:[/] OPENAI_BASE_URL is set; the SDK will send requests to {host}. "
+            "Make sure that is the provider's official endpoint."
+        )
+    if dry_run:
+        table = Table("#", "run id", "reasoning.effort", "task", "prompt chars")
+        for run in runs:
+            table.add_row(
+                str(run.sequence),
+                run.run_id,
+                str(d.option(run.model_selection).reasoning_effort),
+                run.task_id,
+                str(len(d.task(run.task_id).prompt)),
+            )
+        console.print(table)
+        console.print("Request body of the first run (the others differ only in input and effort):")
+        console.print(dump_json(api_runner.build_request(d, runs[0])), markup=False)
+        key = "is set" if api_runner.api_key_is_set() else "is NOT set (a real run needs it)"
+        console.print(
+            f"Dry run: nothing was sent and nothing was written. {api_runner.API_KEY_ENV} {key}."
+        )
+        console.print(
+            "Each real request is billed by the provider for input and output tokens, reasoning "
+            "tokens included. This tool does not estimate cost."
+        )
+        return
+
+    sdk = api_runner.load_sdk()
+    client = api_runner.make_client(sdk)
+    if not yes and not typer.confirm(
+        f"Send {len(runs)} request(s), billed to the account of the API key?", default=False
+    ):
+        console.print("Nothing was sent.")
+        raise typer.Exit(1)
+
+    def on_retry(run: PlannedRun, message: str, delay: float) -> None:
+        err_console.print(f"[yellow]{run.run_id}: {message} — retrying in {delay:g} s[/]")
+
+    try:
+        result = api_runner.send_runs(
+            s,
+            runs,
+            client=client,
+            sdk=sdk,
+            min_interval=min_interval,
+            on_record=lambda o: console.print(_api_outcome_line(o, len(plan_.runs)), markup=False),
+            on_retry=on_retry,
+        )
+    except KeyboardInterrupt:
+        err_console.print("Interrupted. Saved records are kept; run the command again to resume.")
+        raise typer.Exit(130) from None
+    console.print(f"Recorded {len(result.recorded)} run(s) to {s.records_path}.")
+    _print_validation_summary(validate_study(Study.load(study)))
+    if result.stopped_at is not None:
+        raise StudyError(
+            f"stopped at run {result.stopped_at.run_id} (no record written for it): "
+            f"{result.stop_reason}. Run the command again to resume."
+        )
+
+
 @app.command()
 @_errors
 def template(
@@ -548,31 +678,63 @@ def validate(
 
 def _print_condition_table(a: Analysis) -> None:
     conf = int(a.settings.confidence * 100)
+    api = a.definition.execution_method == "official_api"
     table = Table(
         "cond",
-        "default",
-        "per-message",
+        *(["setting"] if api else ["default", "per-message"]),
         "scored",
         "accuracy",
         f"{conf}% CI",
         "success",
         "format fail",
         f"median time ({method_text(a.primary_latency_method)})",
-        "thinking shown",
+        "median reasoning tokens" if api else "thinking shown",
         title="Conditions",
     )
+    api_by = a.api.set_index("condition_id") if api else None
     for row in a.conditions.itertuples():
+        if api_by is not None:
+            rep = api_by.loc[row.condition_id]
+            last = f"{tokens(rep.reasoning_tokens_median)} (n={rep.reasoning_tokens_n})"
+        else:
+            last = f"{pct(row.thinking_shown_rate)} (n={row.thinking_known_n})"
         table.add_row(
             row.condition_id,
-            row.model_selection,
-            row.message_override,
+            *([row.model_selection] if api else [row.model_selection, row.message_override]),
             f"{row.n_scored}",
             pct(row.accuracy),
             pct_ci(row.accuracy_low, row.accuracy_high),
             pct(row.success_rate),
             str(row.n_format_failures),
             f"{seconds(row.latency_median)} (n={row.latency_n})",
-            f"{pct(row.thinking_shown_rate)} (n={row.thinking_known_n})",
+            last,
+        )
+    console.print(table)
+
+
+def _print_api_table(a: Analysis) -> None:
+    table = Table(
+        "cond",
+        "effort sent",
+        "API values",
+        "model id(s) reported",
+        "echoed effort ≠ sent",
+        "incomplete",
+        "reasoning tokens median [Q1–Q3]",
+        "input / output tokens total",
+        title="Values reported by the API (as returned, not verified)",
+    )
+    for r in a.api.itertuples():
+        table.add_row(
+            r.condition_id,
+            str(r.requested_effort),
+            f"{r.n_api_values}/{r.n_included}",
+            ", ".join(f"{k} ({v})" for k, v in sorted(r.models.items())) or "—",
+            str(r.n_effort_mismatch),
+            ", ".join(f"{k} ({v})" for k, v in sorted(r.incomplete_reasons.items())) or "—",
+            f"{tokens(r.reasoning_tokens_median)} [{tokens(r.reasoning_tokens_q1)}–"
+            f"{tokens(r.reasoning_tokens_q3)}]",
+            f"{tokens(r.input_tokens_sum)} / {tokens(r.output_tokens_sum)}",
         )
     console.print(table)
 
@@ -630,7 +792,7 @@ def _print_comparisons(a: Analysis) -> None:
         title="Pairwise differences",
     )
     for row in a.comparisons.itertuples():
-        unit = "proportion" if row.metric == "accuracy" else "seconds"
+        unit = METRIC_UNITS[row.metric]
         iv = None if pd.isna(row.difference) else Interval(row.difference, row.low, row.high)
         table.add_row(
             METRIC_NAMES[row.metric],
@@ -675,8 +837,11 @@ def analyze_cmd(
         console.print("No observations recorded yet — there is nothing to analyse.")
         return
     _print_condition_table(a)
-    _print_label_table(a)
-    _print_overrides(a)
+    if a.definition.execution_method == "official_api":
+        _print_api_table(a)
+    else:
+        _print_label_table(a)
+        _print_overrides(a)
     _print_comparisons(a)
     console.print(
         "Accuracy counts format failures as incorrect; success rate also counts errors and "

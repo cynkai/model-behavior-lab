@@ -1,0 +1,238 @@
+# Model Behavior Lab — experiment definition (official API)
+# =============================================================================
+# This file is the pre-registration of the experiment. Settle it BEFORE you
+# send any request. `mblab plan` stores a hash and a full snapshot of it, and
+# `mblab run-api` refuses to send requests if it changed after the plan.
+#
+# Field reference:  docs/methodology.md (§12 covers official_api studies)
+#
+# COST: every request is billed to the account of the API key in
+# OPENAI_API_KEY — input and output tokens, reasoning tokens included.
+# 3 conditions x 6 tasks x 3 repetitions = 54 requests. Preview them for free
+# with `mblab run-api -s <study> --dry-run`. This tool does not estimate cost.
+# =============================================================================
+
+schema_version: 1
+experiment_id: openai-reasoning-effort
+experiment_version: "1.0.0"
+title: OpenAI Reasoning Effort Experiment
+service: openai-api
+platform: responses-api
+# official_api: `mblab run-api` sends every planned run through the official
+# OpenAI Python SDK (Responses API). Nothing is typed in by hand.
+execution_method: official_api
+
+# Sent with every request. Use a dated snapshot id rather than an alias, so the
+# model behind the name cannot change during the study. Check the provider's
+# model documentation for which reasoning.effort values the model accepts.
+api:
+  provider: openai
+  model: gpt-5.5-2026-04-23
+  # Upper bound per request; reasoning tokens count toward it. A response that
+  # reaches it is recorded as `incomplete` (reason max_output_tokens) and
+  # reported, not hidden. Higher effort levels are more likely to reach it.
+  max_output_tokens: 32000
+
+research_questions:
+  - >-
+    For one model called through the OpenAI Responses API, how do accuracy on
+    six fixed tasks, response time, and the reasoning-token counts the API
+    reports differ between reasoning.effort settings?
+
+hypotheses:
+  - id: H1
+    statement: >-
+      Higher reasoning.effort settings are associated with more reasoning
+      tokens reported by the API.
+    predictions:
+      - "Median reported reasoning tokens: low < medium < high."
+  - id: H2
+    statement: >-
+      Higher reasoning.effort settings are associated with higher accuracy on
+      these six tasks.
+    predictions:
+      - "Accuracy: low ≤ medium ≤ high, with longer response times at higher effort."
+  # Neither is assumed. The report describes differences between conditions;
+  # it does not test these hypotheses.
+
+# Statements you verified in OFFICIAL documentation, each with its URL and the
+# date you read it. Leave the list empty rather than guessing.
+documented_facts: []
+# - statement: "..."
+#   source_url: "https://platform.openai.com/docs/..."
+#   accessed_on: 2026-11-19
+
+# What this experiment cannot observe. Repeated in every report.
+not_observable:
+  - How the provider applies a reasoning.effort setting internally, beyond the token counts the API reports.
+  - The content of the model's hidden reasoning (only its token count is reported).
+  - Whether the weights behind the reported model id changed during the study.
+  - Server-side load, queueing, or routing that affects response time.
+
+# One option per reasoning.effort value of the model above. `label` is a
+# readable name; `reasoning_effort` is what is sent.
+selection_options:
+  - id: low
+    label: reasoning.effort = low
+    reasoning_effort: low
+  - id: medium
+    label: reasoning.effort = medium
+    reasoning_effort: medium
+  - id: high
+    label: reasoning.effort = high
+    reasoning_effort: high
+  # Other values the API defines: none, minimal, xhigh, max (model-dependent).
+  # - id: xhigh
+  #   label: reasoning.effort = xhigh
+  #   reasoning_effort: xhigh
+
+# One condition per effort level. There is no per-message selection in an API
+# study: every request carries exactly one setting.
+conditions:
+  - id: L
+    label: reasoning.effort = low
+    model_selection: low
+    hypothesis_ids: [H1, H2]
+  - id: M
+    label: reasoning.effort = medium
+    model_selection: medium
+    hypothesis_ids: [H1, H2]
+  - id: H
+    label: reasoning.effort = high
+    model_selection: high
+    hypothesis_ids: [H1, H2]
+
+# 3 conditions x 6 tasks x 3 repetitions = 54 requests. An exploratory size,
+# not a sample size chosen for statistical power.
+repetitions: 3
+randomization:
+  seed: 20261119
+  strategy: blocked_by_repetition
+
+# Nothing to declare for API requests: no memory, custom instructions, or
+# tools are sent (each request is independent and stored with store=false).
+confounders: []
+
+latency_protocol: >-
+  `mblab run-api` times each request with a client-side monotonic timer, from
+  just before the SDK call until the full response has arrived
+  (latency_method=client_timer). It includes network transfer and provider
+  queueing. If a request is retried after a transient error, only the final
+  attempt is timed. Do not compare it with stopwatch times from UI studies.
+
+# Six tasks, all scored automatically. Reference answers are machine-checked in
+# tests/test_template_answers.py. Difficulty is the author's prior judgement,
+# not a calibrated rating. Every prompt ends with the same instructions.
+tasks:
+  - id: T1
+    title: Elapsed time
+    category: arithmetic
+    difficulty: easy
+    prompt: |-
+      A train departs at 09:47 and arrives at 14:12 on the same day. How many minutes does the trip take?
+
+      Do not use web search, code execution, or any other tools.
+      End your reply with a final line in exactly this format:
+      ANSWER: <your answer>
+    reference_answer: "265"
+    scoring:
+      method: numeric
+      expected: 265
+
+  - id: T2
+    title: Calendar offset
+    category: date reasoning
+    difficulty: medium
+    prompt: |-
+      What calendar date is exactly 100 days after 19 November 2026? Give the date in YYYY-MM-DD format.
+
+      Do not use web search, code execution, or any other tools.
+      End your reply with a final line in exactly this format:
+      ANSWER: <your answer>
+    reference_answer: "2027-02-27"
+    scoring:
+      method: regex
+      # The date, and no other digits, on the answer line.
+      pattern: '^\D*2027-02-27\D*$'
+
+  - id: T3
+    title: Letter count
+    category: character counting
+    difficulty: medium
+    prompt: |-
+      How many times does the letter "e" (uppercase or lowercase) appear in the sentence below?
+
+      Seventeen elegant elephants entered the emerald temple, never resting even once.
+
+      Do not use web search, code execution, or any other tools.
+      End your reply with a final line in exactly this format:
+      ANSWER: <your answer>
+    reference_answer: "22"
+    scoring:
+      method: numeric
+      expected: 22
+
+  - id: T4
+    title: Seating puzzle
+    category: logic
+    difficulty: hard
+    prompt: |-
+      Five people — Ana, Ben, Cho, Dev, and Eun — sit in five chairs numbered 1 to 5 from left to right, one person per chair.
+
+      1. Ben sits somewhere to the left of Eun.
+      2. Cho sits in an even-numbered chair.
+      3. Ana sits directly next to Dev.
+      4. Eun is not in chair 5.
+      5. Dev is not at either end of the row.
+
+      Exactly one arrangement satisfies all five clues. List the people from chair 1 to chair 5.
+
+      Do not use web search, code execution, or any other tools.
+      End your reply with a final line in exactly this format:
+      ANSWER: <your answer>
+    reference_answer: "Ben, Cho, Eun, Dev, Ana"
+    scoring:
+      method: regex
+      # The five names in this order, any separators, nothing else.
+      pattern: '^\W*ben\W+cho\W+eun\W+dev\W+ana\W*$'
+      ignore_case: true
+
+  - id: T5
+    title: Digit-sum count
+    category: combinatorics
+    difficulty: hard
+    prompt: |-
+      How many positive integers less than 10,000 have digits that add up to exactly 20?
+
+      Do not use web search, code execution, or any other tools.
+      End your reply with a final line in exactly this format:
+      ANSWER: <your answer>
+    reference_answer: "633"
+    scoring:
+      method: numeric
+      expected: 633
+
+  - id: T6
+    title: Code trace
+    category: program tracing
+    difficulty: hard
+    prompt: |-
+      What does the following Python program print? Work it out without running it.
+
+      def f(n):
+          seen = set()
+          while n not in seen:
+              seen.add(n)
+              n = sum(int(d) ** 2 for d in str(n))
+          return n, len(seen)
+
+      print(f(2027))
+
+      Do not use web search, code execution, or any other tools.
+      End your reply with a final line in exactly this format:
+      ANSWER: <your answer>
+    reference_answer: "(37, 13)"
+    scoring:
+      method: exact_match
+      accepted: ["(37, 13)", "37, 13"]
+      normalize: [strip_markdown, remove_whitespace, strip_edge_punctuation]

@@ -19,6 +19,7 @@ from mblab.demo import DEMO_BANNER
 from mblab.formatting import (
     COMPARISON_STATUS,
     METRIC_NAMES,
+    METRIC_UNITS,
     VERDICT_SHORT,
     interval_text,
     method_text,
@@ -26,6 +27,7 @@ from mblab.formatting import (
     pct,
     pct_ci,
     seconds,
+    tokens,
 )
 from mblab.schema import ExactMatchScoring, ManualScoring, NumericScoring, RegexScoring
 from mblab.stats import Interval
@@ -35,6 +37,13 @@ SCOPE_NOTE = (
     "**Scope of claims.** This report describes what the client displayed and how the "
     "responses behaved in this sample. It does not show which model, routing path, or "
     "reasoning effort produced a response — those are not observable in this experiment."
+)
+API_SCOPE_NOTE = (
+    "**Scope of claims.** This report describes the requests sent through the provider's "
+    "official API, the values the API returned (model id, status, token counts), and how the "
+    "responses behaved in this sample. API-reported values are recorded as returned and not "
+    "independently verified; how the provider applies a reasoning-effort setting internally is "
+    "not observable in this experiment."
 )
 NO_DATA = (
     "_No observations have been recorded yet, so this report intentionally contains no "
@@ -76,6 +85,14 @@ def scoring_text(task) -> str:
     return rule.method
 
 
+def _is_api(a: Analysis) -> bool:
+    return a.definition.execution_method == "official_api"
+
+
+def _counts(counts: dict[str, int]) -> str:
+    return ", ".join(f"{k} ({v})" for k, v in sorted(counts.items())) or "—"
+
+
 def _interval(row: object) -> Interval | None:
     diff = getattr(row, "difference", None)
     if diff is None or pd.isna(diff):
@@ -107,7 +124,7 @@ def _header(a: Analysis, study: Study, now: datetime) -> list[str]:
             ],
         ),
         "",
-        SCOPE_NOTE,
+        API_SCOPE_NOTE if _is_api(a) else SCOPE_NOTE,
         "",
     ]
     return out
@@ -156,24 +173,30 @@ def _environment(a: Analysis) -> list[str]:
     method = {
         "manual_ui": "manual_ui — the experimenter operated the official client by hand and "
         "typed in what it displayed; nothing was automated or intercepted",
-        "official_api": "official_api — requests through the provider's official API",
+        "official_api": "official_api — requests sent by `mblab run-api` through the "
+        "provider's official SDK; responses and usage recorded as the API returned them",
     }[d.execution_method]
-    out = [
-        "## 3. Experimental environment",
-        "",
-        md_table(
-            ["Item", "Value"],
-            [
-                ["Service", d.service],
-                ["Platform", d.platform],
-                ["Execution method", method],
-                ["Client version(s)", versions],
-                ["Runs sent", dates],
-                ["Recorders", ", ".join(env["recorders"]) or "—"],
-            ],
-        ),
-        "",
+    rows = [
+        ["Service", d.service],
+        ["Platform", d.platform],
+        ["Execution method", method],
+        ["SDK version(s)" if d.api else "Client version(s)", versions],
+        ["Runs sent", dates],
     ]
+    if d.api:
+        reported: dict[str, int] = {}
+        for models in a.api["models"]:
+            for model, n in models.items():
+                reported[model] = reported.get(model, 0) + n
+        rows += [
+            ["Model id requested", f"`{d.api.model}`"],
+            ["Model id(s) reported by the API", _counts(reported)],
+            ["max_output_tokens", d.api.max_output_tokens or "not set"],
+            ["Stored by the provider", "no (store=false)"],
+        ]
+    else:
+        rows.append(["Recorders", ", ".join(env["recorders"]) or "—"])
+    out = ["## 3. Experimental environment", "", md_table(["Item", "Value"], rows), ""]
     if d.confounders:
         rows = []
         for conf in d.confounders:
@@ -204,7 +227,11 @@ def _conditions(a: Analysis) -> list[str]:
             [
                 cond.id,
                 d.option_label(cond.model_selection),
-                d.option_label(cond.message_override),
+                (
+                    f"`{d.option(cond.model_selection).reasoning_effort}`"
+                    if d.api
+                    else d.option_label(cond.message_override)
+                ),
                 cond.role,
                 ", ".join(cond.hypothesis_ids) or "—",
                 summary.n_planned,
@@ -220,8 +247,8 @@ def _conditions(a: Analysis) -> list[str]:
         md_table(
             [
                 "Condition",
-                "Default selection",
-                "Per-message selection",
+                "Setting" if d.api else "Default selection",
+                "reasoning.effort sent" if d.api else "Per-message selection",
                 "Role",
                 "Hypotheses",
                 "Planned",
@@ -232,7 +259,9 @@ def _conditions(a: Analysis) -> list[str]:
         ),
         "",
         f"{len(d.conditions)} conditions × {len(d.tasks)} tasks × {d.repetitions} repetitions = "
-        f"{d.planned_run_count} runs, one new conversation per run, in a randomized order "
+        f"{d.planned_run_count} runs, "
+        + ("one independent API request" if d.api else "one new conversation")
+        + " per run, in a randomized order "
         f"(seed {seed}, strategy `{strategy}`).",
         "",
     ]
@@ -265,11 +294,23 @@ def _method(a: Analysis) -> list[str]:
         "- **Task success rate** — correct answers among all included runs; errors, refusals, and "
         "incomplete responses count as failures.",
         "- **Response time** — summarised per measurement method and never pooled across methods.",
-        "- **Thinking indicator** — whether the client showed a thinking/reasoning indicator, "
-        "and the duration it displayed (copied verbatim).",
-        "- **Displayed label** — the model name the client showed, classified against "
-        "pre-registered labels and aliases as matching the per-message selection, the default, "
-        "both, another option, or none.",
+        *(
+            [
+                "- **Reported reasoning tokens** — `usage.output_tokens_details.reasoning_tokens` "
+                "as the API returned it; runs without a reported count are left out, not "
+                "counted as zero.",
+                "- **Reported model id and effort** — the `model` and `reasoning.effort` values "
+                "in each API response, copied as returned.",
+            ]
+            if _is_api(a)
+            else [
+                "- **Thinking indicator** — whether the client showed a thinking/reasoning "
+                "indicator, and the duration it displayed (copied verbatim).",
+                "- **Displayed label** — the model name the client showed, classified against "
+                "pre-registered labels and aliases as matching the per-message selection, the "
+                "default, both, another option, or none.",
+            ]
+        ),
         f"- {blinding}",
         f"- Intervals: {conf}% Wilson (proportions), Newcombe hybrid score (differences of "
         f"proportions), percentile bootstrap with {s.bootstrap_resamples} resamples and seed "
@@ -308,13 +349,20 @@ def _results(a: Analysis) -> list[str]:
         "### 6.2 Condition comparison",
         "",
     ]
+    api = _is_api(a)
+    api_by = a.api.set_index("condition_id") if api else None
     rows = []
     for r in a.conditions.itertuples():
+        if api_by is not None:
+            reasoning = api_by.loc[r.condition_id]
+            last = f"{tokens(reasoning.reasoning_tokens_median)} (n={reasoning.reasoning_tokens_n})"
+        else:
+            last = f"{pct(r.thinking_shown_rate)} (n={r.thinking_known_n})"
         rows.append(
             [
                 r.condition_id,
                 r.model_selection,
-                r.message_override,
+                *([] if api else [r.message_override]),
                 f"{r.n_correct}/{r.n_scored}",
                 pct(r.accuracy),
                 pct_ci(r.accuracy_low, r.accuracy_high),
@@ -324,15 +372,14 @@ def _results(a: Analysis) -> list[str]:
                 if r.repetition_accuracy_sd is None or pd.isna(r.repetition_accuracy_sd)
                 else f"{100 * r.repetition_accuracy_sd:.0f} pp",
                 f"{seconds(r.latency_median)} (n={r.latency_n})",
-                f"{pct(r.thinking_shown_rate)} (n={r.thinking_known_n})",
+                last,
             ]
         )
     out += [
         md_table(
             [
                 "Cond.",
-                "Default",
-                "Per-message",
+                *(["Setting"] if api else ["Default", "Per-message"]),
                 "Correct",
                 "Accuracy",
                 f"{conf}% CI",
@@ -340,7 +387,7 @@ def _results(a: Analysis) -> list[str]:
                 "Format fail.",
                 "SD across reps",
                 f"Median time ({method_text(a.primary_latency_method)})",
-                "Thinking shown",
+                "Median reasoning tokens" if api else "Thinking shown",
             ],
             rows,
         ),
@@ -370,7 +417,60 @@ def _results(a: Analysis) -> list[str]:
             ),
             "",
         ]
-    out += [
+    out += _api_results(a) if api else _label_results(a)
+    out += ["### 6.6 Pairwise differences (descriptive)", ""]
+    return out + _rest_of_results(a, conf)
+
+
+def _api_results(a: Analysis) -> list[str]:
+    rows = [
+        [
+            r.condition_id,
+            f"`{r.requested_effort}`",
+            f"{r.n_api_values}/{r.n_included}",
+            _counts(r.models),
+            r.n_effort_mismatch,
+            _counts(r.incomplete_reasons),
+            f"{tokens(r.reasoning_tokens_median)} [{tokens(r.reasoning_tokens_q1)}–"
+            f"{tokens(r.reasoning_tokens_q3)}] (n={r.reasoning_tokens_n})",
+            tokens(r.output_tokens_median),
+            f"{tokens(r.input_tokens_sum)} / {tokens(r.output_tokens_sum)} (n={r.usage_n})",
+        ]
+        for r in a.api.itertuples()
+    ]
+    return [
+        "### 6.4 Values reported by the API",
+        "",
+        md_table(
+            [
+                "Cond.",
+                "Effort sent",
+                "Runs with API values",
+                "Model id(s) reported",
+                "Echoed effort ≠ sent",
+                "Incomplete (reason)",
+                "Reasoning tokens: median [Q1–Q3]",
+                "Median output tokens",
+                "Input / output tokens, total",
+            ],
+            rows,
+        ),
+        "",
+        "Values are copied from the API responses and not independently verified. Reasoning "
+        "tokens are part of the output tokens. Token totals are listed so cost can be worked out "
+        "from the provider's price list; this report does not price anything.",
+        "",
+        "### 6.5 Per-message selection vs. default",
+        "",
+        "_Not applicable: every API request carries exactly one setting, so there is no "
+        "per-message selection._",
+        "",
+    ]
+
+
+def _label_results(a: Analysis) -> list[str]:
+    conf = int(a.settings.confidence * 100)
+    out = [
         "### 6.4 Client-displayed model labels",
         "",
         md_table(
@@ -427,7 +527,11 @@ def _results(a: Analysis) -> list[str]:
         ]
         out += [f"- *{m.metric}*: {m.explanation}" for m in o.metrics]
         out.append("")
-    out += ["### 6.6 Pairwise differences (descriptive)", ""]
+    return out
+
+
+def _rest_of_results(a: Analysis, conf: int) -> list[str]:
+    out: list[str] = []
     if a.comparisons.empty:
         out += ["_Not enough data._", ""]
     else:
@@ -440,9 +544,7 @@ def _results(a: Analysis) -> list[str]:
                         r.condition_a,
                         r.condition_b,
                         f"{r.n_a}/{r.n_b}",
-                        interval_text(
-                            _interval(r), "proportion" if r.metric == "accuracy" else "seconds"
-                        ),
+                        interval_text(_interval(r), METRIC_UNITS[r.metric]),
                         COMPARISON_STATUS[r.status],
                     ]
                     for r in a.comparisons.itertuples()
@@ -536,6 +638,16 @@ def _interpretation(a: Analysis) -> list[str]:
         out.append(
             f"- **{tally.hypothesis_id}** {tally.sentence().removeprefix(tally.hypothesis_id + ' ')}"
         )
+    if _is_api(a):
+        out += [
+            "- Differences between effort levels describe this sample: these six tasks, this "
+            "model id, this account, and these dates. Reported token counts are the provider's "
+            "figures, recorded as returned.",
+            "- Confidence would improve with more repetitions and tasks, other model ids, and "
+            "replication on other dates.",
+            "",
+        ]
+        return out
     out += [
         "- A pattern described as *consistent with* a selection is compatible with that "
         "selection being applied in this sample. It does not establish which model, routing "
@@ -599,8 +711,14 @@ def _reproduction(a: Analysis, study: Study) -> list[str]:
         "mblab report -s <study-dir>",
         "```",
         "",
-        "To run the experiment again: `mblab init`, copy the same `experiment.yaml`, then "
-        "`mblab plan` (same seed → same order) and follow docs/experiment-protocol.md.",
+        (
+            "To run the experiment again: `mblab init --template openai-reasoning-effort`, copy "
+            "the same `experiment.yaml`, then `mblab plan` (same seed → same order) and "
+            "`mblab run-api`. Responses will differ from run to run; compare distributions."
+            if _is_api(a)
+            else "To run the experiment again: `mblab init`, copy the same `experiment.yaml`, "
+            "then `mblab plan` (same seed → same order) and follow docs/experiment-protocol.md."
+        ),
         "",
     ]
 

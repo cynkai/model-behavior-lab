@@ -11,7 +11,7 @@ license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.11"
 authors = [{ name = "cynkai" }]
-keywords = ["llm", "evaluation", "reproducibility", "experiment", "chatgpt", "reasoning-effort"]
+keywords = ["llm", "evaluation", "reproducibility", "experiment", "chatgpt", "openai", "reasoning-effort"]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Intended Audience :: Science/Research",
@@ -33,7 +33,14 @@ dependencies = [
 
 [project.optional-dependencies]
 dashboard = ["streamlit>=1.67"]
-dev = ["pytest>=8.0", "ruff>=0.6", "streamlit>=1.67", "vl-convert-python>=1.7"]
+api = ["openai>=1.66"]
+dev = [
+  "pytest>=8.0",
+  "ruff>=0.6",
+  "streamlit>=1.67",
+  "vl-convert-python>=1.7",
+  "openai>=1.66",
+]
 
 [project.scripts]
 mblab = "mblab.cli:app"

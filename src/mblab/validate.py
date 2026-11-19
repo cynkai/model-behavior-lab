@@ -281,6 +281,7 @@ def validate_study(study: Study, now: datetime | None = None) -> ValidationRepor
         )
 
     _check_dataset_level(study, report)
+    _check_api_records(study, report)
     _check_grades(study, report)
 
     missing = [
@@ -366,6 +367,54 @@ def _check_dataset_level(study: Study, report: ValidationReport) -> None:
                 "warning",
                 "duplicate_response_text",
                 f"Identical response text in runs {_listed(run_ids)} — check for a copy-paste mistake.",
+            )
+
+
+def _check_api_records(study: Study, report: ValidationReport) -> None:
+    """official_api studies: API-reported values are present and consistent with the request."""
+    definition = study.definition
+    if definition.execution_method != "official_api":
+        return
+    option_ids = {o.id for o in definition.selection_options}
+    no_values: list[str] = []
+    mismatch: list[str] = []
+    models: Counter[str] = Counter()
+    tiers: Counter[str] = Counter()
+    for rec in study.records:
+        reported = rec.api_reported
+        if reported is None:
+            no_values.append(rec.run_id)
+            continue
+        if reported.model:
+            models[reported.model] += 1
+        if reported.service_tier:
+            tiers[reported.service_tier] += 1
+        if rec.model_selection in option_ids and reported.reasoning_effort is not None:
+            requested = definition.option(rec.model_selection).reasoning_effort
+            if reported.reasoning_effort != requested:
+                mismatch.append(f"{rec.run_id} ({requested} → {reported.reasoning_effort})")
+    if no_values:
+        report.add(
+            "warning",
+            "missing_api_values",
+            "Records without API-reported values in an official_api study (expected from "
+            f"`mblab run-api`): {_listed(no_values)}.",
+        )
+    if mismatch:
+        report.add(
+            "warning",
+            "api_effort_mismatch",
+            "The reasoning effort echoed by the API differs from the one requested: "
+            f"{_listed(mismatch)}.",
+        )
+    for code, what, counts in (
+        ("api_model_changed", "model id", models),
+        ("api_service_tier_changed", "service tier", tiers),
+    ):
+        if len(counts) > 1:
+            listing = ", ".join(f"{k} ({n} runs)" for k, n in counts.most_common())
+            report.add(
+                "warning", code, f"The API reported more than one {what} in this study: {listing}."
             )
 
 

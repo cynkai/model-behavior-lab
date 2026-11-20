@@ -40,11 +40,13 @@ COMPARISON_STATUS = {
 }
 METRIC_NAMES = {
     "accuracy": "accuracy",
+    "success_rate": "task success rate",
     "latency_median": "median response time",
     "reasoning_tokens_median": "median reported reasoning tokens",
 }
 METRIC_UNITS = {
     "accuracy": "proportion",
+    "success_rate": "proportion",
     "latency_median": "seconds",
     "reasoning_tokens_median": "tokens",
 }

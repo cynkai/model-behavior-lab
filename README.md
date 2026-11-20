@@ -331,8 +331,10 @@ The full write-up is [docs/methodology.md](docs/methodology.md).
 - **Metrics.** Accuracy (format failures count as incorrect, and are reported
   separately); task success rate (errors and refusals count as failures); response time
   per measurement method, never pooled; thinking-indicator rate; displayed-label classes.
-- **Statistics.** 95% Wilson intervals, Newcombe intervals for differences of
-  proportions, percentile bootstrap (seeded) for differences of medians. Groups with
+- **Statistics.** 95% Wilson intervals; differences of proportions standardized over
+  tasks with a stratified Newcombe interval (so runs missing or not completed unevenly
+  across tasks cannot tilt a comparison); percentile bootstrap (seeded) for differences
+  of medians. Groups with
   fewer than 5 observations are not compared. Intervals assume independent responses and
   describe this fixed task set only.
 - **Per-message vs. default.** For a condition such as C (Instant + Pro), a metric can

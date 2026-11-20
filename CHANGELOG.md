@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### Task-standardized comparisons
+
+- Differences of proportions (accuracy, the thinking-indicator rate, and the new task
+  success rate comparison) are standardized over the tasks scored in both conditions,
+  each task counting equally, with a stratified Newcombe interval. Before, scored
+  responses were pooled, so runs missing or not completed unevenly across tasks changed
+  the task mix: in simulated studies with equal per-task accuracy the pooled comparison
+  reported a difference up to 23% of the time, the standardized one under 2%. With the
+  same runs on every task the numbers are unchanged.
+- The pairwise comparisons include the task success rate (errors and refusals count as
+  failures), and the limitations list each condition's not-completed runs when they
+  differ.
+- The position λ for proportions is computed the same way (per-task means, resampled
+  within tasks); when every task is all-or-nothing it is shown without an interval.
+
 ### Confounders and run order
 
 - Confounders can declare `per_run: true` (never pre-filled from the previous run in

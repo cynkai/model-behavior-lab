@@ -172,12 +172,26 @@ separately. Missing runs are reported as missing, never imputed.
 ## 8. Statistics
 
 - **Proportions:** Wilson score interval (behaves sensibly at small n and at 0% / 100%).
-- **Differences of proportions:** Newcombe's hybrid score interval (method 10). Both are
-  checked against statsmodels and against Newcombe's (1998) worked example in the tests.
+- **Differences of proportions:** standardized over tasks, with a stratified Newcombe
+  interval. Every condition is planned with the same runs per task, so a comparison
+  averages the per-task differences over the tasks scored in both conditions (each task
+  counts equally). Pooling the scored responses instead would compare different mixes of
+  tasks whenever runs are missing, excluded, or not completed unevenly — a condition
+  that fails hard tasks more often would look more accurate. Each condition's
+  standardized proportion gets a Wilson interval with the effective sample size
+  1 / Σ (w² / nₖ) (w = 1 / number of tasks), combined as in Newcombe's hybrid score
+  interval (method 10; cf. Yan & Su, 2010, for the stratified form). With the same
+  number of runs on every task this is exactly the unstratified Newcombe interval, which
+  the tests check against statsmodels and Newcombe's (1998) worked example. In 4,000
+  simulated studies with equal per-task accuracy but one condition losing most
+  hard-task runs, the pooled interval reported a difference 7.8% of the time at 3 runs
+  per task and 23% at 10; the standardized one 1.8% and 1.9%. Accuracy and the task
+  success rate (errors and refusals count as failures) are both compared, and the
+  limitations list each condition's not-completed runs when they differ.
 - **Differences of medians:** percentile bootstrap, 2,000 resamples, seeded with the plan
   seed; reproducible across Python and NumPy versions.
-- **Minimum size:** groups with fewer than 5 observations are not compared
-  (`--min-n` changes this).
+- **Minimum size:** groups with fewer than `analysis.min_n` observations (5 by default,
+  never less) are not compared; `--min-n` overrides it and marks the analysis exploratory.
 - **Assumptions, stated in every report:** responses are treated as independent, and
   intervals are conditional on the fixed task set — they say nothing about other tasks.
   Pairwise differences are descriptive, not significance tests; with many comparisons

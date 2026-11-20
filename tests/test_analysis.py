@@ -277,3 +277,39 @@ def test_order_adherence_is_reported(study_dir, definition, plan):
     assert any("planned random order for 0% of run pairs" in lim.text for lim in a.limitations)
     text = render_report(a, Study.load(study_dir), now=FIXED_NOW)
     assert "The runs followed that order for 0% of run pairs." in text
+
+
+def test_uneven_incompletion_is_standardized_and_reported(study_dir, definition, plan):
+    # B and C answer every task the same way (right on T1-T4, wrong on T5-T6), but C
+    # returns errors on T4-T6 in two of three repetitions. Pooled over scored responses C
+    # would look 17 points better; standardized by task it is not, and its success rate
+    # (errors count as failures) is lower.
+    records = []
+    for run in plan.runs:
+        task = definition.task(run.task_id)
+        right = run.condition_id in {"B", "C"} and run.task_id in {"T1", "T2", "T3", "T4"}
+        error = run.condition_id == "C" and run.task_id in {"T4", "T5", "T6"} and run.repetition > 1
+        records.append(
+            make_record(
+                definition,
+                plan,
+                run.run_id,
+                response_text="" if error else f"ANSWER: {task.reference_answer if right else '0'}",
+                response_status="error" if error else "completed",
+            )
+        )
+    write_records(study_dir, records)
+    a = analyze(Study.load(study_dir))
+    acc = a.comparisons[(a.comparisons["metric"] == "accuracy")].set_index(
+        ["condition_a", "condition_b"]
+    )
+    row = acc.loc[("B", "C")]
+    assert row.difference == pytest.approx(0) and row.low < 0 < row.high
+    success = a.comparisons[(a.comparisons["metric"] == "success_rate")].set_index(
+        ["condition_a", "condition_b"]
+    )
+    assert success.loc[("B", "C")].difference == pytest.approx(1 / 9)  # T4: 3/3 vs 1/3
+    (lim,) = [lim for lim in a.limitations if "errors, refusals or incomplete" in lim.text]
+    assert (
+        "Conditions differ in how often this happened (A 0/18, B 0/18, C 6/18, D 0/18)" in lim.text
+    )

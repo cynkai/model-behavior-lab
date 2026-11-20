@@ -355,8 +355,10 @@ def _method(a: Analysis) -> list[str]:
             ]
         ),
         f"- {blinding}",
-        f"- Intervals: {conf}% Wilson (proportions), Newcombe hybrid score (differences of "
-        f"proportions), percentile bootstrap with {s.bootstrap_resamples} resamples and seed "
+        f"- Intervals: {conf}% Wilson (proportions); differences of proportions are "
+        "standardized over the tasks scored in both conditions, each task counting equally, "
+        "with a stratified Newcombe hybrid score interval; percentile bootstrap with "
+        f"{s.bootstrap_resamples} resamples and seed "
         f"{s.seed} (differences of medians). Groups with fewer than {s.min_n} observations are "
         "not compared.",
         f"- Per-message vs. default: a condition counts as consistent with a reference only if "

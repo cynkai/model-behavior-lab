@@ -795,7 +795,8 @@ def page_methodology(study: Study, a: Analysis) -> None:
     s = a.settings
     st.markdown(
         f"- Proportions: {int(s.confidence * 100)}% Wilson score intervals. Differences of "
-        "proportions: Newcombe hybrid score intervals.\n"
+        "proportions: standardized over tasks (each task scored in both conditions counts "
+        "equally), stratified Newcombe intervals.\n"
         f"- Differences of medians: percentile bootstrap, {s.bootstrap_resamples} resamples, "
         f"seed {s.seed}.\n"
         f"- Groups with fewer than {s.min_n} observations are not compared.\n"

@@ -22,8 +22,10 @@ from mblab.stats import (
     Interval,
     bootstrap_median_diff,
     bootstrap_position,
+    bootstrap_position_by_stratum,
     describe,
     newcombe_interval,
+    stratified_newcombe,
     wilson_interval,
 )
 from mblab.study import Study, read_unrecorded_log
@@ -714,6 +716,8 @@ class _MetricData:
     k: int = 0
     n: int = 0
     values: tuple[float, ...] = ()
+    #: For proportions: (task id, successes, n) per task, for task-standardized comparisons.
+    strata: tuple[tuple[str, int, int], ...] = ()
 
     @property
     def size(self) -> int:
@@ -725,11 +729,24 @@ class _MetricData:
             return [1.0] * self.k + [0.0] * (self.n - self.k)
         return list(self.values)
 
+    def by_stratum(self) -> dict[str, list[float]]:
+        """1/0 outcomes per task (proportions only)."""
+        return {task: [1.0] * k + [0.0] * (n - k) for task, k, n in self.strata}
+
     @property
     def value(self) -> float | None:
         if self.kind == "proportion":
             return self.k / self.n if self.n else None
         return describe(self.values)["median"]
+
+
+def _proportion_data(rows: pd.DataFrame, hits: pd.Series) -> _MetricData:
+    """A proportion with its per-task counts (tasks are the strata of the design)."""
+    strata = tuple(
+        (str(task), int(hits.loc[group.index].sum()), len(group))
+        for task, group in rows.groupby("task_id", sort=True)
+    )
+    return _MetricData("proportion", int(hits.sum()), len(rows), strata=strata)
 
 
 def _metric_data(
@@ -738,12 +755,13 @@ def _metric_data(
     inc = results[(~results["excluded"]) & (results["condition_id"] == cond_id)]
     if metric == "accuracy":
         scored = _scored(inc)
-        return _MetricData("proportion", int(scored["correct"].eq(True).sum()), len(scored))
+        return _proportion_data(scored, scored["correct"].eq(True))
+    if metric == "success_rate":
+        decided = inc[inc["score_status"] != "pending_manual"]
+        return _proportion_data(decided, decided["correct"].eq(True))
     if metric == "thinking_shown_rate":
         known = inc[inc["thinking_indicator"].isin(["shown", "not_shown"])]
-        return _MetricData(
-            "proportion", int((known["thinking_indicator"] == "shown").sum()), len(known)
-        )
+        return _proportion_data(known, known["thinking_indicator"] == "shown")
     if metric == "latency_median":
         if latency_method is None:
             return _MetricData("median")
@@ -764,6 +782,14 @@ def _metric_data(
 
 def _diff(a: _MetricData, b: _MetricData, settings: AnalysisSettings) -> Interval | None:
     if a.kind == "proportion":
+        if a.strata and b.strata:
+            # Task-standardized: every task scored in both counts equally, so a different
+            # mix of missing or incomplete runs per condition cannot shift the difference.
+            return stratified_newcombe(
+                {t: (k, n) for t, k, n in a.strata},
+                {t: (k, n) for t, k, n in b.strata},
+                settings.confidence,
+            )
         return newcombe_interval(a.k, a.n, b.k, b.n, settings.confidence)
     return bootstrap_median_diff(
         a.values,
@@ -804,7 +830,7 @@ def pairwise_comparisons(
                 "status",
             ]
         )
-    metrics = ["accuracy", "latency_median"]
+    metrics = ["accuracy", "success_rate", "latency_median"]
     if definition.execution_method == "official_api":
         metrics.append("reasoning_tokens_median")
     for metric in metrics:
@@ -1024,18 +1050,27 @@ def assess_overrides(
             vs_o = _diff(dc, do, settings)
             verdict = override_verdict(refs, vs_d, vs_o, settings.equivalence_fraction)
             position = None
-            if refs is not None and refs.excludes_zero:
-                position = bootstrap_position(
-                    dc.samples(),
-                    dd.samples(),
-                    do.samples(),
-                    statistic="mean" if dc.kind == "proportion" else "median",
+            if refs is not None and refs.excludes_zero and dc.kind == "proportion":
+                position = bootstrap_position_by_stratum(
+                    dc.by_stratum(),
+                    dd.by_stratum(),
+                    do.by_stratum(),
                     resamples=settings.bootstrap_resamples,
                     confidence=settings.confidence,
                     seed=settings.seed,
                 )
-                if position is not None:
-                    fmt["position"] = f"{position.estimate:.2f}"
+            elif refs is not None and refs.excludes_zero:
+                position = bootstrap_position(
+                    dc.samples(),
+                    dd.samples(),
+                    do.samples(),
+                    statistic="median",
+                    resamples=settings.bootstrap_resamples,
+                    confidence=settings.confidence,
+                    seed=settings.seed,
+                )
+            if position is not None:
+                fmt["position"] = f"{position.estimate:.2f}"
             metrics.append(
                 MetricAssessment(
                     name,
@@ -1412,13 +1447,25 @@ def build_limitations(analysis: Analysis) -> list[Limitation]:
     inc = analysis.included
     not_completed = int((inc["response_status"] != "completed").sum())
     if not_completed:
-        out.append(
-            Limitation(
-                "data",
-                f"{not_completed} response(s) were errors, refusals or incomplete; they count as "
-                "failures in task success rate and are left out of accuracy.",
-            )
+        text = (
+            f"{not_completed} response(s) were errors, refusals or incomplete; they count as "
+            "failures in task success rate and are left out of accuracy."
         )
+        per_cond = [
+            (c.id, int((rows["response_status"] != "completed").sum()), len(rows))
+            for c in d.conditions
+            for rows in [inc[inc["condition_id"] == c.id]]
+            if len(rows)
+        ]
+        if len({missing / size for _, missing, size in per_cond}) > 1:
+            text += (
+                " Conditions differ in how often this happened ("
+                + ", ".join(f"{cid} {missing}/{size}" for cid, missing, size in per_cond)
+                + "), so their scored responses cover different mixes of tasks: comparisons "
+                "are standardized over the tasks scored in both conditions, and the task "
+                "success rate is compared as well."
+            )
+        out.append(Limitation("data", text))
     fmt = int((inc["score_status"] == "format_failure").sum())
     if fmt:
         out.append(

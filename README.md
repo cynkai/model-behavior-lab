@@ -191,6 +191,12 @@ Everything is a local file. There is no database and no server-side component.
   leaves out any such record already in the study and every copy of a run recorded
   twice, says how many in the limitations, and the report opens with a banner while
   validation finds errors. `official_api` studies take no hand-entered rows.
+- **Confounders and run order.** Tool use and usage-limit notices are asked fresh for
+  every run, never copied from the previous one. Values outside a confounder's
+  `recommended` ones are listed per condition in the limitations (also when every run has
+  them), and a sensitivity check repeats the per-message assessments without runs that
+  showed a notice or a tool. The share of run pairs done in the planned random order is
+  measured and reported.
 - **The plan stays once data exists.** After the first record, `mblab plan --force`
   refuses to replace `plan.json`. Each record keeps the hash of the `experiment.yaml` it
   was collected under, and reports list what changed since planning.

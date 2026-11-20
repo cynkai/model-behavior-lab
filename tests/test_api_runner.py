@@ -34,7 +34,7 @@ from .test_analysis import BANNED
 
 API_TEMPLATE = "openai-reasoning-effort"
 FAKE_KEY = "sk-test-" + "k" * 24  # assembled at runtime; not a real key
-UI_TEMPLATE_HASH = "6780cf8e1f60ad7fdfa54cbede89778bef2263ac82b5f85bb0d3bbf3ab0a8360"
+UI_TEMPLATE_HASH = "81365a640492da85bbe36640abea185c4bafe02b5710faa726a1356bede5cb01"
 #: The template as shipped in 0.1.0 (tests/data/chatgpt-model-selection-override-0.1.0.yaml).
 UI_TEMPLATE_HASH_0_1 = "ff3c102876cce68e3520c9ce9775c802ccd3b0b813b86038deb0ea44bc88472b"
 

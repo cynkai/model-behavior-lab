@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### Confounders and run order
+
+- Confounders can declare `per_run: true` (never pre-filled from the previous run in
+  `mblab record` or the dashboard form; the form refuses to save until they are
+  answered) and `recommended` values. The bundled template marks tool use and usage-limit
+  notices per run and recommends memory off, no custom instructions, no tools, no notices.
+- Values outside the recommended ones are listed among the limitations with counts per
+  condition, also when every run has them, and shown next to the per-message
+  assessments in the report, the dashboard, and `mblab analyze`.
+- A sensitivity check repeats the per-message assessments without the runs that had a
+  flagged per-run value (a notice, a visible tool) and lists every verdict that changes.
+- The share of run pairs done in the planned random order is measured (all pairs, not
+  just neighbours), reported by `mblab validate` (a warning below 90%), stated in the
+  report next to "randomized order", and listed among the limitations when below 100%.
+
 ### Scoring rules
 
 - New scoring methods `date` (exactly one YYYY-MM-DD date, other text ignored) and

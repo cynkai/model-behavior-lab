@@ -149,7 +149,9 @@ def test_exclusions_order_and_duplicate_text(study_dir, definition, plan):
     report = _validate(study_dir)
     assert report.n_excluded == 1
     assert "excluded_record" in _codes(report, "info")
-    assert "order_deviation" in _codes(report, "info")
+    # The first planned run was done last of five: 6 of 10 pairs in the planned order.
+    (order,) = [i for i in report.issues if i.code == "order_deviation"]
+    assert order.severity == "warning" and "followed for 60% of run pairs" in order.message
     assert "duplicate_response_text" in _codes(report, "warning")
 
 

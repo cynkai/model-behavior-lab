@@ -10,11 +10,10 @@ Severity levels:
 
 from __future__ import annotations
 
-import itertools
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Literal
+from typing import Any, Literal
 
 from mblab.plan import diff_snapshots, planned_prompt
 from mblab.privacy import scan_text
@@ -64,6 +63,58 @@ class ValidationReport:
 def _listed(items: list[str]) -> str:
     shown = ", ".join(items[:_MAX_LISTED])
     return shown + (f", … (+{len(items) - _MAX_LISTED} more)" if len(items) > _MAX_LISTED else "")
+
+
+#: Below this share of run pairs done in the planned order, the deviation is a warning.
+ORDER_WARNING_BELOW = 0.9
+
+
+@dataclass(frozen=True)
+class OrderAdherence:
+    share: float  # run pairs done in the planned order, among pairs with distinct times
+    discordant: int
+    pairs: int
+
+
+def _inversions(values: list[Any]) -> int:
+    """Pairs i < j with values[i] > values[j] (equal values are not counted), by merge sort."""
+    if len(values) <= 1:
+        return 0
+    mid = len(values) // 2
+    left, right = sorted(values[:mid]), sorted(values[mid:])
+    count = _inversions(values[:mid]) + _inversions(values[mid:])
+    j = 0
+    for item in left:  # for each left item, how many right items are strictly smaller
+        while j < len(right) and right[j] < item:
+            j += 1
+        count += j
+    return count
+
+
+def order_adherence(study: Study) -> OrderAdherence | None:
+    """How closely the runs were done in the planned random order.
+
+    Over every pair of recorded runs with different timestamps: the share done in the
+    planned order. None when fewer than two runs can be compared.
+    """
+    plan = study.plan
+    if plan is None:
+        return None
+    planned = plan.by_run_id()
+    seen: set[str] = set()
+    stamps = []
+    for rec in sorted(
+        (r for r in study.records if r.run_id in planned), key=lambda r: planned[r.run_id].sequence
+    ):
+        if rec.run_id not in seen:  # duplicates are reported elsewhere
+            seen.add(rec.run_id)
+            stamps.append(rec.timestamp)
+    ties = sum(n * (n - 1) // 2 for n in Counter(stamps).values())
+    pairs = len(stamps) * (len(stamps) - 1) // 2 - ties
+    if pairs <= 0:
+        return None
+    discordant = _inversions(stamps)
+    return OrderAdherence(1 - discordant / pairs, discordant, pairs)
 
 
 def changed_since_planning(study: Study, records: list[RunRecord]) -> str:
@@ -369,19 +420,15 @@ def _check_dataset_level(study: Study, report: ValidationReport) -> None:
             "they are summarised separately and never pooled.",
         )
 
-    by_sequence = sorted(
-        (r for r in records if study.plan and r.run_id in study.plan.by_run_id()),
-        key=lambda r: study.plan.by_run_id()[r.run_id].sequence,  # type: ignore[union-attr]
-    )
-    inversions = sum(
-        1 for prev, cur in itertools.pairwise(by_sequence) if cur.timestamp < prev.timestamp
-    )
-    if inversions:
+    adherence = order_adherence(study)
+    if adherence is not None and adherence.share < 1:
         report.add(
-            "info",
+            "warning" if adherence.share < ORDER_WARNING_BELOW else "info",
             "order_deviation",
-            f"{inversions} run(s) were executed earlier than a run planned before them; "
-            "the randomized order was not followed exactly.",
+            f"The planned random order was followed for {adherence.share:.0%} of run pairs "
+            f"({adherence.discordant} of {adherence.pairs} pairs were done in the reverse "
+            "order). Time trends (app updates, practice, server load) can then differ "
+            "between conditions.",
         )
 
     texts: dict[str, list[str]] = defaultdict(list)

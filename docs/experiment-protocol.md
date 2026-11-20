@@ -103,11 +103,13 @@ new version; `mblab validate` will flag the change and reports will list it.
 | Thinking indicator | `shown` / `not_shown` / `unknown`, and the text exactly as shown ("Thought for 1m 12s") |
 | Stopwatch seconds | Your reading, or blank if you missed it |
 | Time sent | When you tapped send, with a UTC offset (the CLI and form fill this in) |
-| Confounders | Memory, custom instructions, tool use visible in the response, any usage-limit or model-switch notice, network |
+| Confounders | Memory, custom instructions, tool use visible in the response, any usage-limit or model-switch notice, network. Tool use and notices are asked fresh for every run — never copy them from the last one |
 | Protocol deviation | Anything that departed from this protocol (see §4). Blank otherwise |
 
-Then move on with `mblab next`. Follow the planned order; `mblab validate` notes runs
-done out of order.
+Then move on with `mblab next`. Follow the planned order: `mblab validate` reports the
+share of run pairs done in that order, and the report states it, because runs done
+condition by condition let time trends (an app update, practice, server load) differ
+between conditions.
 
 ## 4. Deviations, errors, and limits
 

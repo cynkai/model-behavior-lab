@@ -40,6 +40,13 @@ def _goto(at: AppTest, page: str) -> AppTest:
     return at
 
 
+def _answer_per_run_confounders(at: AppTest, value: str = "none") -> None:
+    """Per-run confounders (tools, notices) start empty and must be answered."""
+    for box in at.selectbox:
+        if box.value is None:
+            box.set_value(value)
+
+
 def test_every_page_renders_demo_data_with_synthetic_banner(monkeypatch, tmp_path):
     create_demo_study(tmp_path / "demo")
     at = _app(monkeypatch, tmp_path / "demo")
@@ -72,6 +79,7 @@ def test_recording_form_saves_a_record(monkeypatch, study_dir):
         "2026-11-20T10:00:00+09:00"
     )
     at.text_area[0].input("Work.\nANSWER: 265")
+    _answer_per_run_confounders(at)
     at.button[0].click().run()
     assert not at.exception, at.exception
     (record,) = Study.load(study_dir).records
@@ -144,6 +152,7 @@ def test_a_run_saved_meanwhile_is_not_overwritten(monkeypatch, study_dir, defini
         study_dir / "records.jsonl",
         [make_record(definition, plan, "B:T1:r1", notes="other writer")],
     )
+    _answer_per_run_confounders(at)
     at.button[0].click().run()
     assert not at.exception, at.exception
     assert any("already has a record" in e.value for e in at.error)
@@ -159,6 +168,7 @@ def test_saving_moves_on_and_replacing_needs_the_tick(monkeypatch, study_dir, de
     at = _goto(_app(monkeypatch, study_dir), "Run plan & recording")
     {w.label: w for w in at.text_input}["Client (app) version"].input("1.0")
     at.text_area[0].input("ANSWER: 265")
+    _answer_per_run_confounders(at)
     at.button[0].click().run()
     assert at.selectbox(key="run-select").value == "B:T5:r1"  # the next pending run
 
@@ -171,6 +181,7 @@ def test_saving_moves_on_and_replacing_needs_the_tick(monkeypatch, study_dir, de
     {w.label: w for w in at.text_input}["Notes"].input("second")
     at.text_area[0].input("ANSWER: 265")
     at.checkbox[-1].check()  # "Replace the existing record for this run"
+    _answer_per_run_confounders(at)
     at.button[0].click().run()
     assert not at.exception, at.exception
     (record,) = [r for r in Study.load(study_dir).records if r.run_id == "B:T1:r1"]
@@ -238,3 +249,17 @@ def test_text_from_a_study_is_never_rendered_as_markdown(monkeypatch, tmp_path):
     assert any(md_text(f"Shared study {PAYLOAD}") == t for t in shown)
     assert md_text(PAYLOAD) in shown
     assert any(md_text(PAYLOAD) in t for t in shown if t.startswith("- `excluded_record`"))
+
+
+def test_per_run_confounders_are_never_carried_over(monkeypatch, study_dir):
+    at = _goto(_app(monkeypatch, study_dir), "Run plan & recording")
+    {w.label: w for w in at.text_input}["Client (app) version"].input("1.0")
+    at.text_area[0].input("ANSWER: 265")
+    at.button[0].click().run()  # tools_used and switch_notice left unanswered
+    assert any("Not saved: answer" in e.value for e in at.error)
+    assert Study.load(study_dir).records == []
+    _answer_per_run_confounders(at, "none")
+    at.button[0].click().run()
+    assert len(Study.load(study_dir).records) == 1
+    # The next run's form starts empty again for per-run confounders, not with "none".
+    assert sum(1 for box in at.selectbox if box.value is None) == 2

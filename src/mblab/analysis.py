@@ -27,7 +27,7 @@ from mblab.stats import (
     wilson_interval,
 )
 from mblab.study import Study, read_unrecorded_log
-from mblab.validate import ValidationReport, validate_study
+from mblab.validate import OrderAdherence, ValidationReport, order_adherence, validate_study
 
 LabelClass = Literal[
     "matches_override",
@@ -162,6 +162,12 @@ class Analysis:
     left_out: dict[str, list[str]] = field(default_factory=dict)
     #: Records collected under an experiment.yaml whose hash differs from plan.json's.
     n_records_changed_definition: int = 0
+    #: Per condition and confounder with recommended values: runs with another value.
+    confounder_flags: pd.DataFrame = field(default_factory=pd.DataFrame)
+    #: The per-message assessments again without runs that had a flagged per-run value.
+    sensitivity: SensitivityCheck | None = None
+    #: How closely the runs followed the planned random order.
+    order: OrderAdherence | None = None
 
     @property
     def included(self) -> pd.DataFrame:
@@ -1111,6 +1117,82 @@ class HypothesisTally:
         )
 
 
+def _flagged(conf: Any, values: pd.Series) -> pd.Series:
+    """Known values outside a confounder's recommended ones ("unknown" is not flagged)."""
+    return values.notna() & ~values.isin(conf.recommended) & (values != "unknown")
+
+
+def confounder_flags(definition: ExperimentDefinition, results: pd.DataFrame) -> pd.DataFrame:
+    """For each confounder with recommended values: per condition, runs with another value."""
+    columns = ["confounder_id", "condition_id", "n_runs", "n_flagged", "values"]
+    if results.empty:
+        return pd.DataFrame(columns=columns)
+    inc = results[~results["excluded"]]
+    rows = []
+    for conf in definition.confounders:
+        if not conf.recommended:
+            continue
+        for cond in definition.conditions:
+            vals = inc.loc[inc["condition_id"] == cond.id, f"conf_{conf.id}"]
+            flagged = vals[_flagged(conf, vals)]
+            rows.append(
+                {
+                    "confounder_id": conf.id,
+                    "condition_id": cond.id,
+                    "n_runs": len(vals),
+                    "n_flagged": len(flagged),
+                    "values": dict(sorted(Counter(flagged).items())),
+                }
+            )
+    return pd.DataFrame(rows, columns=columns)
+
+
+@dataclass(frozen=True)
+class SensitivityCheck:
+    """The per-message assessments again, without runs that had a flagged per-run value."""
+
+    left_out: int
+    reasons: dict[str, int]
+    #: (condition, metric, verdict with every run, verdict without the flagged runs)
+    changes: list[tuple[str, str, str, str]]
+    n_assessments: int
+
+
+def sensitivity_check(
+    definition: ExperimentDefinition,
+    results: pd.DataFrame,
+    overrides: list[OverrideAssessment],
+    settings: AnalysisSettings,
+    latency_method: str | None,
+) -> SensitivityCheck | None:
+    """Leave out runs where a per-run confounder (a notice, a tool) had a value outside its
+    recommended ones, assess again, and list the verdicts that change. None when no run
+    is flagged or no condition uses a per-message selection."""
+    per_run = [c for c in definition.confounders if c.per_run and c.recommended]
+    if results.empty or not per_run or not overrides:
+        return None
+    flagged = pd.Series(False, index=results.index)
+    reasons: Counter[str] = Counter()
+    for conf in per_run:
+        hits = _flagged(conf, results[f"conf_{conf.id}"]) & ~results["excluded"]
+        flagged |= hits
+        reasons.update(f"{conf.id}={v}" for v in results.loc[hits, f"conf_{conf.id}"])
+    if not flagged.any():
+        return None
+    kept = results[~flagged]
+    again = assess_overrides(
+        definition, kept, summarize_labels(definition, kept), settings, latency_method
+    )
+    before = {(o.condition_id, m.metric): m.verdict for o in overrides for m in o.metrics}
+    changes = [
+        (o.condition_id, m.metric, before[(o.condition_id, m.metric)], m.verdict)
+        for o in again
+        for m in o.metrics
+        if before.get((o.condition_id, m.metric), m.verdict) != m.verdict
+    ]
+    return SensitivityCheck(int(flagged.sum()), dict(sorted(reasons.items())), changes, len(before))
+
+
 def hypothesis_tallies(analysis: Analysis) -> list[HypothesisTally]:
     tallies = []
     for hyp in analysis.definition.hypotheses:
@@ -1303,6 +1385,15 @@ def build_limitations(analysis: Analysis) -> list[Limitation]:
                 + "), so this is an exploratory analysis, not the pre-registered one.",
             )
         )
+    if analysis.order is not None and analysis.order.share < 1:
+        out.append(
+            Limitation(
+                "data",
+                f"The runs followed the planned random order for {analysis.order.share:.0%} of "
+                "run pairs, so time trends (app updates, practice, server load) can differ "
+                "between conditions.",
+            )
+        )
     if analysis.left_out:  # before the early return: it matters most when nothing is left
         reasons = "; ".join(f"{reason}: {len(ids)}" for reason, ids in analysis.left_out.items())
         total = sum(len(ids) for ids in analysis.left_out.values())
@@ -1372,6 +1463,26 @@ def build_limitations(analysis: Analysis) -> list[Limitation]:
             "seeing data would be a post-hoc change."
         )
         out.append(Limitation("data", " ".join(parts)))
+    flags = analysis.confounder_flags
+    for conf in d.confounders:
+        rows = flags[flags["confounder_id"] == conf.id] if not flags.empty else flags
+        flagged = int(rows["n_flagged"].sum()) if not rows.empty else 0
+        if flagged:
+            values: Counter[str] = Counter()
+            for v in rows["values"]:
+                values.update(v)
+            by_cond = ", ".join(
+                f"{r.condition_id} {r.n_flagged}/{r.n_runs}" for r in rows.itertuples()
+            )
+            out.append(
+                Limitation(
+                    "data",
+                    f"Confounder '{conf.id}' had a value other than the recommended "
+                    f"({', '.join(conf.recommended)}) in {flagged} of {int(rows['n_runs'].sum())} "
+                    f"runs: {', '.join(f'{k} {n}' for k, n in sorted(values.items()))} "
+                    f"(by condition: {by_cond}).",
+                )
+            )
     for conf in d.confounders:
         col = f"conf_{conf.id}"
         values = Counter(inc[col].dropna())
@@ -1590,11 +1701,16 @@ def analyze(study: Study, settings: AnalysisSettings | None = None) -> Analysis:
         validation=validate_study(study),
         primary_latency_method=primary,
         left_out=unplaced_records(study),
+        confounder_flags=confounder_flags(definition, results),
+        order=order_adherence(study),
         n_records_changed_definition=sum(
             1
             for r in study.records
             if study.plan and r.definition_sha256 not in (None, study.plan.definition_sha256)
         ),
+    )
+    analysis.sensitivity = sensitivity_check(
+        definition, results, analysis.overrides, settings, primary
     )
     analysis.limitations = build_limitations(analysis)
     analysis.claims = build_claims(analysis)

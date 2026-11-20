@@ -99,6 +99,24 @@ runs together. The shuffle is a Fisher–Yates driven only by `random.Random(see
 whose output Python guarantees across versions, so the same seed gives the same order
 everywhere.
 
+Randomization only protects against time trends if the runs are done in that order.
+`mblab validate` measures it over every pair of recorded runs: the share done in the
+planned order (pairs with the same timestamp are not counted). Anything below 100% is
+reported, below 90% as a warning, and the report states the share next to "randomized
+order" and lists it among the limitations.
+
+**Confounders.** Each confounder in `experiment.yaml` can declare `recommended` values
+(memory `disabled`, tools `none`, notices `none`) and `per_run: true` for what can change
+with every response. A value outside the recommended ones is listed among the
+limitations with its count per condition — also when every run has it, since a constant
+setting such as memory being on still shapes every response. Per-run confounders are
+never pre-filled from the previous run (in `mblab record` and the dashboard form), so
+pressing Enter cannot record what the last response showed. A **sensitivity check**
+leaves out the runs with a flagged per-run value (a usage-limit notice, a visible tool)
+and runs the per-message assessments again; the report lists every verdict that
+changes, since a notice concentrated in one condition is the main alternative
+explanation for a pattern.
+
 ## 6. Scoring
 
 **Answer extraction.** Prompts ask for a final line `ANSWER: <answer>`. The last such

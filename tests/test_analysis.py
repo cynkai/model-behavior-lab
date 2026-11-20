@@ -198,3 +198,21 @@ def test_analysis_serializes_and_uses_careful_language(study_dir, definition, pl
     categories = {c.category for c in a.claims}
     assert {"hypothesis", "observation", "not_verified"} <= categories
     assert "documented_fact" not in categories
+
+
+def test_distinct_answers_count_what_the_rule_read(study_dir, definition, plan):
+    # "265" and "265 minutes" are one answer; a format failure is no answer at all
+    # (under pandas 3 it used to be counted as a distinct NaN answer).
+    runs = [r for r in plan.runs if r.task_id == "T1" and r.condition_id == "A"]
+    texts = ["ANSWER: 265", "ANSWER: 265 minutes", "no answer line"]
+    write_records(
+        study_dir,
+        [
+            make_record(definition, plan, r.run_id, response_text=t)
+            for r, t in zip(runs, texts, strict=True)
+        ],
+    )
+    a = analyze(Study.load(study_dir))
+    row = a.tasks.set_index(["condition_id", "task_id"]).loc[("A", "T1")]
+    assert (row.n_scored, row.n_format_failures) == (3, 1)
+    assert row.distinct_answers == 1 and row.majority_answer_share == 1.0

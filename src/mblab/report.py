@@ -31,7 +31,14 @@ from mblab.formatting import (
     tokens,
 )
 from mblab.pilot import PILOT_BANNER
-from mblab.schema import ExactMatchScoring, ManualScoring, NumericScoring, RegexScoring
+from mblab.schema import (
+    DateScoring,
+    ExactMatchScoring,
+    ManualScoring,
+    NumericScoring,
+    RegexScoring,
+    SequenceScoring,
+)
 from mblab.stats import Interval
 from mblab.study import GRADES_FILE, RECORDS_FILE, Study
 
@@ -77,7 +84,14 @@ def scoring_text(task) -> str:
     rule = task.scoring
     if isinstance(rule, NumericScoring):
         tol = f" ± {rule.abs_tolerance:g}" if rule.abs_tolerance else ""
+        if isinstance(rule.expected, list):
+            numbers = ", ".join(f"{v:g}" for v in rule.expected)
+            return f"numeric: exactly the numbers {numbers}{tol}, in this order"
         return f"numeric: one number equal to {rule.expected:g}{tol}"
+    if isinstance(rule, DateScoring):
+        return f"date: exactly one YYYY-MM-DD date, equal to {rule.expected.isoformat()}"
+    if isinstance(rule, SequenceScoring):
+        return "sequence: " + ", ".join(rule.expected) + ", each named once, in this order"
     if isinstance(rule, RegexScoring):
         return f"regex on the answer line: `{rule.pattern}`"
     if isinstance(rule, ExactMatchScoring):

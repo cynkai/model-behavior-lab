@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+### Scoring rules
+
+- New scoring methods `date` (exactly one YYYY-MM-DD date, other text ignored) and
+  `sequence` (each name once, in order, any separators), and `numeric` takes a list of
+  numbers in order. The bundled T2, T4 and T6 use them, so correct answers in other
+  wordings — "2027-02-27 (Saturday, 27 February 2027)", "Ben, Cho, Eun, Dev, and Ana",
+  "1. Ben, 2. Cho, …", "It prints (37, 13)" — score correct instead of wrong, and an
+  answer the rule cannot read (two dates, a missing name, a third number) is a format
+  failure rather than a wrong answer. Both templates' definition hashes change; studies
+  made from the 0.1.0 template keep theirs.
+- Tasks can pre-register `answer_examples` (`correct`, `incorrect`, `unreadable`), checked
+  whenever the definition loads; every bundled task has them.
+- Distinct answers and the most common answer's share count what each rule read ("265"
+  and "265 minutes" are one answer) and no longer count a format failure as an answer
+  (under pandas 3 it was counted as a NaN answer).
+- A hand-typed number like `1,050` (latency, thinking seconds, grading points) is refused
+  as ambiguous instead of being read as 1.05; a displayed duration such as "Thought for
+  1,050 seconds" keeps its text and gets no number.
+
 ### Per-message vs. default verdicts
 
 - "Consistent with the per-message selection" (or the default) now needs the interval for

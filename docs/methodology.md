@@ -80,7 +80,7 @@ basis. Generated text follows fixed wording rules:
   every copy of a run recorded more than once. Reports open with a banner while
   `mblab validate` finds errors.
 - A definition is rejected unless every automatically scored task has a reference answer
-  that passes its own scoring rule.
+  that passes its own scoring rule, and its `answer_examples` (if any) score as declared.
 - Label aliases (`observed_label_aliases`) are fixed in advance, so deciding which
   displayed text "counts as Pro" cannot be done after seeing the data. They are chosen
   from a **pilot study** (`mblab pilot`): a separate directory with its own
@@ -103,16 +103,28 @@ everywhere.
 
 **Answer extraction.** Prompts ask for a final line `ANSWER: <answer>`. The last such
 line is used (markdown decoration, a full-width colon, and a value on the following line
-are tolerated). If no usable line exists, the response is a **format failure**: it counts
-as incorrect in accuracy and is also counted separately, because a formatting habit is
-not the same as a wrong answer.
+are tolerated). If no usable line exists, or the line cannot be read by the task's rule
+(no number, two different dates, a name missing from a sequence), the response is a
+**format failure**: it counts as incorrect in accuracy and is also counted separately,
+because a formatting habit is not the same as a wrong answer.
 
 | Method | Rule |
 |---|---|
 | `exact_match` | Normalized answer equals one of `accepted` (normalization steps are declared per task) |
 | `regex` | `pattern` matches the answer (anchors in the pattern decide how strict) |
-| `numeric` | Exactly one distinct number in the answer, within `abs_tolerance` of `expected` |
+| `numeric` | Exactly one distinct number in the answer, within `abs_tolerance` of `expected`; with a list `expected: [37, 13]`, exactly those numbers in that order (a different count is unreadable) |
+| `date` | Exactly one `YYYY-MM-DD` date in the answer, equal to `expected`; other text such as a weekday is ignored, a date in another format or two different dates are unreadable |
+| `sequence` | Each item of `expected` named exactly once (whole words, any case, any separators such as commas, "and", or "1."), in that order; the same items in another order are wrong, a missing or repeated item is unreadable |
 | `manual` | Points from human graders against a rubric; pass if the mean ≥ `pass_threshold` |
+
+A rule must not turn a model's wording habit into an accuracy difference: a correct
+answer written another way ("Ben, Cho, Eun, Dev, and Ana", "It prints (37, 13)",
+"2027-02-27 (Saturday, 27 February 2027)") has to score correct. Each task can fix
+`answer_examples` in advance — answers that must score `correct`, `incorrect`, and
+`unreadable` — and the definition is rejected unless the rule scores every one of them
+that way (the bundled tasks list examples for all three). Distinct answers per task
+are counted from what the rule read (so "265" and "265 minutes" are one answer), and
+format failures are not counted as answers.
 
 **Non-completed responses** (error, refusal, incomplete) are not scorable: they are left
 out of accuracy and count as failures in task success rate.

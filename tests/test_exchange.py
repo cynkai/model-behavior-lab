@@ -252,3 +252,16 @@ def test_json_import_refuses_records_that_do_not_fit_the_plan(
     assert "another study or a pilot" in messages
     assert "item 3: run A:T3:r1: condition_id is 'B' but the plan says 'A'" in messages
     assert "item 4: run Z:T1:r1: not in this study's plan" in messages
+
+
+def test_thousands_separated_times_are_refused_as_ambiguous(study_dir):
+    from mblab.records import parse_decimal, parse_thinking_seconds
+
+    assert parse_decimal("12,5", "x") == 12.5 and parse_decimal("1.050", "x") == 1.05
+    with pytest.raises(ValueError, match="ambiguous"):
+        parse_decimal("1,050", "latency_seconds")
+    assert parse_thinking_seconds("Thought for 1,050 seconds") is None  # text kept, no number
+    assert parse_thinking_seconds("Thought for 1m 12,5s") == 72.5
+    study, path = _one_filled_row(study_dir, latency_seconds="1,050")
+    result = import_file(study, path)
+    assert result.records == [] and "latency_seconds '1,050' is ambiguous" in result.errors[0]

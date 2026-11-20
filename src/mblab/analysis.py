@@ -286,6 +286,7 @@ RESULT_COLUMNS = [
     "score",
     "outcome",
     "extracted_answer",
+    "canonical_answer",
     "score_detail",
     "score_source",
     "grader_disagreement",
@@ -403,6 +404,7 @@ def build_results(study: Study) -> pd.DataFrame:
             "score": result.score,
             "outcome": outcome,
             "extracted_answer": result.extracted_answer,
+            "canonical_answer": result.canonical,
             "score_detail": result.detail,
             "score_source": result.source,
             "grader_disagreement": result.grader_disagreement,
@@ -547,8 +549,11 @@ def summarize_tasks(definition: ExperimentDefinition, results: pd.DataFrame) -> 
             sub = inc[(inc["condition_id"] == cond.id) & (inc["task_id"] == task.id)]
             scored = _scored(sub)
             outcomes = scored["correct"].tolist()
-            answers = [a for a in scored["extracted_answer"].tolist() if a is not None]
-            normalized = Counter(" ".join(str(a).split()).casefold() for a in answers)
+            # Answers as each task's rule read them, from scored rows only: a format
+            # failure has no answer (None, or NaN in a pandas 3 string column).
+            read = scored[scored["score_status"] == "scored"]["canonical_answer"].tolist()
+            answers = [a for a in read if isinstance(a, str)]
+            normalized = Counter(answers)
             rows.append(
                 {
                     "condition_id": cond.id,

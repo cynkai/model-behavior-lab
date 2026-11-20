@@ -66,6 +66,7 @@ def test_diff_snapshots_reports_changed_paths(definition):
     data = yaml.safe_load(template_text())
     data["tasks"][4]["scoring"]["expected"] = 634
     data["tasks"][4]["reference_answer"] = "634"
+    data["tasks"][4].pop("answer_examples")  # they pin 633 as the correct answer
     data["conditions"].pop()
     new = ExperimentDefinition.model_validate(data).model_dump(mode="json")
     changes = diff_snapshots(old, new)

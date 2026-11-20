@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
 from mblab.records import parse_thinking_seconds
-from mblab.schema import ManualGrade, Task
-from mblab.scoring import extract_answer, normalize_text, parse_single_number, score_record
+from mblab.schema import ManualGrade, NumericScoring, SequenceScoring, Task
+from mblab.scoring import (
+    check_reference_answer,
+    extract_answer,
+    normalize_text,
+    parse_single_number,
+    score_record,
+)
 
 from .conftest import FIXED_NOW, make_record
 
@@ -66,7 +73,7 @@ def test_normalize_text_steps():
         ("T1", "264", False, "scored"),
         ("T2", "2027-02-27", True, "scored"),
         ("T2", "2027-02-27 (Saturday)", True, "scored"),
-        ("T2", "2027-02-27 or 2027-02-28", False, "scored"),
+        ("T2", "2027-02-27 or 2027-02-28", False, "format_failure"),  # two dates: unreadable
         ("T3", "22", True, "scored"),
         ("T3", "21", False, "scored"),
         ("T4", "Ben, Cho, Eun, Dev, Ana", True, "scored"),
@@ -76,6 +83,16 @@ def test_normalize_text_steps():
         ("T6", "(37, 13)", True, "scored"),
         ("T6", "`(37,13)`", True, "scored"),
         ("T6", "(1, 6)", False, "scored"),
+        # The review's correct answers in other wordings, scored wrong by the 0.1.0 rules:
+        ("T2", "2027-02-27 (Saturday, 27 February 2027)", True, "scored"),
+        ("T4", "Ben, Cho, Eun, Dev, and Ana", True, "scored"),
+        ("T4", "1. Ben, 2. Cho, 3. Eun, 4. Dev, 5. Ana", True, "scored"),
+        ("T6", "It prints (37, 13)", True, "scored"),
+        # Unreadable is not wrong: a format failure, reported apart from wrong answers.
+        ("T2", "27 February 2027", False, "format_failure"),
+        ("T4", "Ben, Cho, Eun, Dev", False, "format_failure"),
+        ("T6", "(37, 13, 2027)", False, "format_failure"),
+        ("T6", "(13, 37)", False, "scored"),
     ],
 )
 def test_template_scoring_rules(definition, plan, task_id, answer, correct, status):
@@ -147,3 +164,22 @@ def test_manual_scoring_uses_mean_of_grades(definition, plan):
 )
 def test_parse_thinking_seconds(text, seconds):
     assert parse_thinking_seconds(text) == seconds
+
+
+def _task(scoring, reference, **extra):
+    return Task(id="X", title="x", prompt="p", reference_answer=reference, scoring=scoring, **extra)
+
+
+def test_answer_examples_are_checked_against_the_rule():
+    rule = {"method": "numeric", "expected": [37, 13]}
+    examples = {"correct": ["37 and 13"], "unreadable": ["37"]}
+    assert check_reference_answer(_task(rule, "(37, 13)", answer_examples=examples)) is None
+    bad = _task(rule, "(37, 13)", answer_examples={"incorrect": ["37"]})
+    assert "incorrect example '37' is not scored incorrect" in check_reference_answer(bad)
+
+
+def test_new_rules_reject_bad_definitions():
+    with pytest.raises(ValidationError, match="at least two"):
+        NumericScoring(method="numeric", expected=[1])
+    with pytest.raises(ValidationError, match="distinct"):
+        SequenceScoring(method="sequence", expected=["Ana", "ana"])

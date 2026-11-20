@@ -22,6 +22,7 @@ from pathlib import Path
 
 from mblab.csvcells import from_row, to_cell
 from mblab.plan import seeded_shuffle
+from mblab.records import parse_decimal
 from mblab.schema import ManualGrade, ManualScoring
 from mblab.study import GRADING_DIR, Study, StudyError, atomic_write_text
 
@@ -153,9 +154,9 @@ def import_blind_sheet(
                 result.errors.append(f"row {number}: grader_id missing (column or --grader)")
                 continue
             try:
-                points = float(points_text.replace(",", "."))
-            except ValueError:
-                result.errors.append(f"row {number}: points {points_text!r} is not a number")
+                points = parse_decimal(points_text, "points")
+            except ValueError as exc:
+                result.errors.append(f"row {number}: {exc}")
                 continue
             if not 0 <= points <= task.scoring.max_points:
                 result.errors.append(

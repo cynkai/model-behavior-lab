@@ -10,18 +10,30 @@ A study directory looks like this::
       grading/            # blind grading sheet and its key
       reports/            # generated Markdown reports and analysis JSON
       exports/            # generated CSV / JSON exports
+
+Every command that writes to ``records.jsonl``, ``grades.jsonl``, ``plan.json`` or
+the API study's unrecorded-response log holds one study-wide lock (``.mblab.lock``)
+and reads the files again inside it, so two writers never work from stale copies.
+Lines that cannot be read are never deleted by a rewrite; they are kept exactly as
+they were and reported by ``mblab validate``.
 """
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
+import shutil
+import socket
+import sys
 import tempfile
-from collections.abc import Iterable, Sequence
+import threading
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass, field
+from datetime import datetime
 from importlib import resources
 from pathlib import Path
-from typing import TypeVar
+from typing import Any, TypeVar
 
 import yaml
 from pydantic import BaseModel, ValidationError
@@ -35,6 +47,10 @@ GRADES_FILE = "grades.jsonl"
 GRADING_DIR = "grading"
 REPORTS_DIR = "reports"
 EXPORTS_DIR = "exports"
+#: Billed API responses that arrived but could not be recorded (official_api studies).
+UNRECORDED_FILE = "api-unrecorded.jsonl"
+#: Held while any command writes to the study.
+LOCK_FILE = ".mblab.lock"
 
 DEFAULT_TEMPLATE = "chatgpt-model-selection-override"
 
@@ -61,16 +77,117 @@ def format_validation_error(exc: ValidationError) -> str:
     return "; ".join(parts)
 
 
-def atomic_write_text(path: Path, text: str) -> None:
+def atomic_write_bytes(path: Path, data: bytes) -> None:
+    """Write a file in one step (temporary file + rename), flushed to disk first."""
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:
-        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
-            handle.write(text)
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
         os.replace(tmp, path)
     except BaseException:
         Path(tmp).unlink(missing_ok=True)
         raise
+
+
+def atomic_write_text(path: Path, text: str) -> None:
+    atomic_write_bytes(path, text.replace("\r\n", "\n").encode("utf-8"))
+
+
+# -- the study-wide write lock ------------------------------------------------------
+
+_held_locks: dict[tuple[str, int], int] = {}
+_held_guard = threading.Lock()
+
+
+def _pid_alive(pid: int) -> bool:
+    if sys.platform.startswith("win"):
+        return True  # os.kill(pid, 0) would terminate the process on Windows; never guess
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True  # exists but belongs to someone else, or cannot be checked
+    return True
+
+
+def _lock_holder(path: Path) -> dict[str, Any]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+@contextlib.contextmanager
+def write_lock(root: Path, purpose: str) -> Iterator[None]:
+    """Hold the study-wide lock while writing; fail at once if another process holds it.
+
+    Re-entrant within one thread. A lock left by a process that no longer exists on
+    this computer is removed automatically.
+    """
+    root = Path(root)
+    key = (str(root.resolve()), threading.get_ident())
+    with _held_guard:
+        if key in _held_locks:
+            _held_locks[key] += 1
+            nested = True
+        else:
+            nested = False
+    if nested:
+        try:
+            yield
+        finally:
+            with _held_guard:
+                _held_locks[key] -= 1
+        return
+
+    path = root / LOCK_FILE
+    info = {
+        "pid": os.getpid(),
+        "host": socket.gethostname(),
+        "purpose": purpose,
+        "since": datetime.now().astimezone().isoformat(timespec="seconds"),
+    }
+    for attempt in (1, 2):
+        try:
+            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+            break
+        except FileExistsError:
+            holder = _lock_holder(path)
+            pid = holder.get("pid")
+            stale = (
+                isinstance(pid, int)
+                and holder.get("host") == info["host"]
+                and pid != os.getpid()
+                and not _pid_alive(pid)
+            )
+            if attempt == 1 and stale:
+                path.unlink(missing_ok=True)  # left behind by a process that no longer exists
+                continue
+            who = (
+                f"`{holder.get('purpose', 'another command')}` (pid {pid}, since "
+                f"{holder.get('since', '?')})"
+                if holder
+                else "another command"
+            )
+            raise StudyError(
+                f"the study is being written by {who}. Wait for it to finish and try again; "
+                f"if nothing is running, delete {path}."
+            ) from None
+    try:
+        os.write(fd, json.dumps(info).encode("utf-8"))
+        os.close(fd)
+        with _held_guard:
+            _held_locks[key] = 1
+        yield
+    finally:
+        with _held_guard:
+            _held_locks.pop(key, None)
+        path.unlink(missing_ok=True)
 
 
 # -- templates ---------------------------------------------------------------
@@ -132,21 +249,47 @@ def save_plan(plan: RunPlan, path: Path) -> None:
 # -- JSON lines --------------------------------------------------------------------
 
 
+@dataclass(frozen=True)
+class JsonLine:
+    """One non-empty line of a JSON-lines file, kept as raw bytes so it can be
+    written back unchanged when it cannot be parsed."""
+
+    number: int
+    raw: bytes
+    item: Any | None
+    error: str | None
+
+
+def load_jsonl_lines(path: Path, parse: Callable[[str], Any]) -> list[JsonLine]:
+    """Parse every line on its own: a damaged line (bad JSON, bad UTF-8, wrong fields)
+    becomes an error for that line only, never an exception for the whole file."""
+    if not path.exists():
+        return []
+    lines: list[JsonLine] = []
+    for number, raw in enumerate(path.read_bytes().split(b"\n"), start=1):
+        raw = raw.rstrip(b"\r")
+        if not raw.strip():
+            continue
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            lines.append(JsonLine(number, raw, None, f"not valid UTF-8 text (byte {exc.start})"))
+            continue
+        try:
+            lines.append(JsonLine(number, raw, parse(text), None))
+        except ValidationError as exc:
+            lines.append(JsonLine(number, raw, None, format_validation_error(exc)))
+        except ValueError as exc:
+            lines.append(JsonLine(number, raw, None, str(exc)))
+    return lines
+
+
 def read_jsonl(path: Path, model: type[M]) -> tuple[list[M], list[LineError]]:
     """Read a JSON-lines file. Bad lines are reported, not raised, so every
     problem can be listed at once by ``mblab validate``."""
-    items: list[M] = []
-    errors: list[LineError] = []
-    if not path.exists():
-        return items, errors
-    with path.open(encoding="utf-8") as handle:
-        for number, line in enumerate(handle, start=1):
-            if not line.strip():
-                continue
-            try:
-                items.append(model.model_validate_json(line))
-            except ValidationError as exc:
-                errors.append(LineError(path.name, number, format_validation_error(exc)))
+    lines = load_jsonl_lines(path, model.model_validate_json)
+    items = [line.item for line in lines if line.error is None]
+    errors = [LineError(path.name, line.number, line.error) for line in lines if line.error]
     return items, errors
 
 
@@ -155,11 +298,51 @@ def write_jsonl(path: Path, items: Iterable[BaseModel]) -> None:
     atomic_write_text(path, text)
 
 
-def append_jsonl(path: Path, items: Sequence[BaseModel]) -> None:
+def rewrite_jsonl_lines(path: Path, lines: Sequence[bytes], backup: bool = True) -> None:
+    """Replace a JSON-lines file in one step; the previous version is kept as ``<name>.bak``."""
+    if backup and path.exists():
+        shutil.copy2(path, path.with_name(path.name + ".bak"))
+    atomic_write_bytes(path, b"".join(line + b"\n" for line in lines))
+
+
+def _append_lines(path: Path, payloads: Sequence[bytes]) -> None:
+    """Append lines, first ending a last line that lacks its newline, then flush to disk."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8", newline="\n") as handle:
-        for item in items:
-            handle.write(item.model_dump_json() + "\n")
+    needs_newline = False
+    if path.exists() and path.stat().st_size > 0:
+        with path.open("rb") as handle:
+            handle.seek(-1, os.SEEK_END)
+            needs_newline = handle.read(1) != b"\n"
+    with path.open("ab") as handle:
+        if needs_newline:
+            handle.write(b"\n")
+        for payload in payloads:
+            handle.write(payload + b"\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
+def append_jsonl(path: Path, items: Sequence[BaseModel]) -> None:
+    _append_lines(path, [item.model_dump_json().encode("utf-8") for item in items])
+
+
+def append_json_object(path: Path, data: dict[str, Any]) -> None:
+    _append_lines(path, [json.dumps(data, ensure_ascii=False, default=str).encode("utf-8")])
+
+
+def _parse_unrecorded(text: str) -> dict[str, Any]:
+    data = json.loads(text)
+    if not isinstance(data, dict) or not isinstance(data.get("run_id"), str):
+        raise ValueError("expected an object with a run_id")
+    return data
+
+
+def read_unrecorded_log(root: Path) -> tuple[list[dict[str, Any]], list[LineError]]:
+    """Entries of the unrecorded-response log, and its unreadable lines."""
+    lines = load_jsonl_lines(root / UNRECORDED_FILE, _parse_unrecorded)
+    entries = [line.item for line in lines if line.error is None]
+    errors = [LineError(UNRECORDED_FILE, line.number, line.error) for line in lines if line.error]
+    return entries, errors
 
 
 # -- study -------------------------------------------------------------------------
@@ -196,7 +379,9 @@ class Study:
         plan = load_plan(paths["plan"])
         records, record_errors = read_jsonl(paths["records"], RunRecord)
         grades, grade_errors = read_jsonl(paths["grades"], ManualGrade)
-        return cls(root, definition, plan, records, grades, record_errors + grade_errors)
+        _, unrecorded_errors = read_unrecorded_log(root)
+        errors = record_errors + grade_errors + unrecorded_errors
+        return cls(root, definition, plan, records, grades, errors)
 
     @property
     def records_path(self) -> Path:

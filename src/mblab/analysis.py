@@ -23,7 +23,7 @@ from mblab.stats import (
     newcombe_interval,
     wilson_interval,
 )
-from mblab.study import Study
+from mblab.study import Study, read_unrecorded_log
 from mblab.validate import ValidationReport, validate_study
 
 LabelClass = Literal[
@@ -1396,9 +1396,8 @@ def analyze(study: Study, settings: AnalysisSettings | None = None) -> Analysis:
     conditions = summarize_conditions(definition, study.plan, results, settings, primary)
     environment = describe_environment(study, results)
     if definition.execution_method == "official_api":
-        from mblab.api_runner import read_unrecorded  # local import: optional feature
-
-        environment["api_unrecorded"] = read_unrecorded(study.root)
+        # Readable entries only; damaged lines are reported by validation (Study.load).
+        environment["api_unrecorded"] = read_unrecorded_log(study.root)[0]
     labels = summarize_labels(definition, results)
     analysis = Analysis(
         definition=definition,

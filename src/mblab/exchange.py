@@ -6,6 +6,7 @@ spreadsheet and imported later. Rows that were not filled in are skipped.
 
 from __future__ import annotations
 
+import contextlib
 import csv
 import io
 import json
@@ -19,7 +20,16 @@ from pydantic import ValidationError
 
 from mblab.records import build_record
 from mblab.schema import RunRecord
-from mblab.study import Study, StudyError, format_validation_error, write_jsonl
+from mblab.study import (
+    RECORDS_FILE,
+    Study,
+    StudyError,
+    append_jsonl,
+    format_validation_error,
+    load_jsonl_lines,
+    rewrite_jsonl_lines,
+    write_lock,
+)
 
 PLAN_COLUMNS = [
     "run_id",
@@ -60,7 +70,9 @@ def write_template_csv(study: Study, path: Path) -> int:
     plan = study.require_plan()
     columns = template_columns(study)
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8", newline="") as handle:
+    # UTF-8 with a byte-order mark: spreadsheet apps (Excel in particular) then read
+    # non-ASCII text such as "—" correctly instead of garbling it.
+    with path.open("w", encoding="utf-8-sig", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=columns)
         writer.writeheader()
         for run in sorted(plan.runs, key=lambda r: r.sequence):
@@ -126,6 +138,10 @@ def _parse_bool(value: str) -> bool:
     raise ValueError(f"expected true/false, got {value!r}")
 
 
+def _squash(text: str) -> str:
+    return " ".join(text.split())
+
+
 def _blank(value: Any) -> bool:
     return value is None or (isinstance(value, str) and not value.strip())
 
@@ -170,8 +186,17 @@ def row_to_record(row: dict[str, str], study: Study, default_tz: tzinfo | None) 
     ):
         if not _blank(row.get(col)):
             data[col] = row[col].strip()
-    if not _blank(row.get("prompt_text")):
-        data["prompt_text"] = row["prompt_text"]
+    task_prompt = study.definition.task(run.task_id).prompt
+    csv_prompt = row.get("prompt_text")
+    if not _blank(csv_prompt) and _squash(csv_prompt) != _squash(task_prompt):
+        if _blank(row.get("protocol_deviation")):
+            raise ValueError(
+                "prompt_text differs from the task prompt. If a spreadsheet changed the text "
+                "(for example its encoding), clear the prompt_text cell; if a different prompt "
+                "was really sent, describe that in protocol_deviation"
+            )
+        data["prompt_text"] = csv_prompt  # a recorded deviation: keep what was sent
+    # Otherwise the planned prompt is stored exactly (whitespace changes are ignored).
     text = row.get("response_text") or ""
     data["response_text"] = text
     data["response_status"] = (row.get("response_status") or "").strip() or (
@@ -209,7 +234,13 @@ def row_to_record(row: dict[str, str], study: Study, default_tz: tzinfo | None) 
 
 
 def read_csv_rows(path: Path) -> list[dict[str, str]]:
-    text = path.read_text(encoding="utf-8-sig")
+    try:
+        text = path.read_text(encoding="utf-8-sig")
+    except UnicodeDecodeError as exc:
+        raise StudyError(
+            f"{path} is not UTF-8 text (byte {exc.start}). Save it from your spreadsheet as "
+            '"CSV UTF-8" and import it again'
+        ) from None
     return list(csv.DictReader(io.StringIO(text)))
 
 
@@ -234,7 +265,10 @@ def import_file(study: Study, path: Path, default_tz: tzinfo | None = None) -> I
         return result
 
     if suffix in {".json", ".jsonl", ".ndjson"}:
-        text = path.read_text(encoding="utf-8")
+        try:
+            text = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError as exc:
+            raise StudyError(f"{path} is not UTF-8 text (byte {exc.start})") from None
         items: list[tuple[int, Any]] = []
         if suffix == ".json":
             try:
@@ -268,34 +302,62 @@ class MergeResult:
     added: list[str] = field(default_factory=list)
     replaced: list[str] = field(default_factory=list)
     conflicts: list[str] = field(default_factory=list)
+    #: Line numbers of records.jsonl lines that could not be read; always kept as they are.
+    unreadable_kept: list[int] = field(default_factory=list)
 
 
 def merge_records(
     study: Study, incoming: list[RunRecord], replace: bool, dry_run: bool
 ) -> MergeResult:
-    """Add records to the study, refusing duplicates unless ``replace`` is set."""
-    result = MergeResult()
+    """Add records to the study, refusing duplicates unless ``replace`` is set.
+
+    Works on the file as it is on disk right now, under the study's write lock, so a
+    record saved meanwhile by another command is neither lost nor overwritten. Lines
+    that cannot be read are written back unchanged; a rewrite keeps the previous file
+    as ``records.jsonl.bak``. Nothing is written when there is a conflict.
+    """
     batch_ids = [r.run_id for r in incoming]
     dup_in_batch = sorted({rid for rid in batch_ids if batch_ids.count(rid) > 1})
     if dup_in_batch:
         raise StudyError(f"the file contains several records for: {', '.join(dup_in_batch)}")
 
-    existing = {r.run_id: r for r in study.records}
-    merged = list(study.records)
-    for rec in incoming:
-        if rec.run_id in existing:
-            if not replace:
+    path = study.root / RECORDS_FILE
+    guard = contextlib.nullcontext() if dry_run else write_lock(study.root, "save records")
+    with guard:
+        lines = load_jsonl_lines(path, RunRecord.model_validate_json)
+        result = MergeResult(unreadable_kept=[line.number for line in lines if line.error])
+        existing = {line.item.run_id for line in lines if line.item is not None}
+        replacements: dict[str, RunRecord] = {}
+        for rec in incoming:
+            if rec.run_id not in existing:
+                result.added.append(rec.run_id)
+            elif replace:
+                replacements[rec.run_id] = rec
+                result.replaced.append(rec.run_id)
+            else:
                 result.conflicts.append(rec.run_id)
-                continue
-            merged = [rec if r.run_id == rec.run_id else r for r in merged]
-            result.replaced.append(rec.run_id)
-        else:
-            merged.append(rec)
-            result.added.append(rec.run_id)
+        if result.conflicts or dry_run or not (result.added or result.replaced):
+            return result
 
-    if result.conflicts:
-        return result
-    if not dry_run and (result.added or result.replaced):
-        write_jsonl(study.records_path, merged)
-        study.records = merged
+        added = [rec for rec in incoming if rec.run_id in set(result.added)]
+        if replacements:
+            out: list[bytes] = []
+            done: set[str] = set()
+            for line in lines:
+                run_id = line.item.run_id if line.item is not None else None
+                if run_id in replacements:
+                    if (
+                        run_id not in done
+                    ):  # one record per replaced run; the old file is kept as .bak
+                        out.append(replacements[run_id].model_dump_json().encode("utf-8"))
+                        done.add(run_id)
+                    continue
+                out.append(line.raw)  # unreadable lines are kept exactly as they were
+            out += [rec.model_dump_json().encode("utf-8") for rec in added]
+            rewrite_jsonl_lines(path, out, backup=True)
+        else:
+            append_jsonl(path, added)
+
+    fresh = Study.load(study.root)
+    study.records, study.load_errors = fresh.records, fresh.load_errors
     return result

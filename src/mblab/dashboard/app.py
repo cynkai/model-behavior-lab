@@ -43,7 +43,7 @@ from mblab.pilot import PILOT_BANNER
 from mblab.records import build_record, condition_instructions, next_pending
 from mblab.report import scoring_text
 from mblab.stats import Interval
-from mblab.study import Study, StudyError, append_jsonl, format_validation_error
+from mblab.study import Study, StudyError, format_validation_error
 
 SCOPE = (
     "These pages describe what the client displayed and how responses behaved in this sample. "
@@ -224,11 +224,18 @@ def page_record(study: Study, a: Analysis) -> None:
     choices = pending_ids + [r for r in table["run"] if r in recorded]
     if not choices:
         return
+    # The selection stays put while the page reruns (e.g. when another command saves a
+    # run), so a form being filled in never switches to a different run underneath you.
+    # After a save it moves on to the next pending run.
+    advance = st.session_state.pop("mblab_select_next", None)
+    if advance in choices:
+        st.session_state["run-select"] = advance
+    elif st.session_state.get("run-select") not in choices:
+        st.session_state["run-select"] = choices[0]
     run_id = st.selectbox(
         "Run",
         choices,
-        index=0,
-        key=f"run-select-{nxt.run_id if nxt else 'done'}",
+        key="run-select",
         help="Defaults to the next pending run in the randomized order.",
     )
     run = a.plan.by_run_id()[run_id]
@@ -263,7 +270,7 @@ def _record_form(study: Study, a: Analysis, run_id: str, exists: bool) -> None:
     run = a.plan.by_run_id()[run_id]
     prev = max(study.records, key=lambda r: r.recorded_at or r.timestamp, default=None)
     if exists:
-        st.warning("This run already has a record. Saving will replace it.")
+        st.warning('This run already has a record. Tick "Replace" in the form to overwrite it.')
     flash = st.session_state.pop("mblab_flash", None)
     if flash:
         st.success(flash)
@@ -308,6 +315,14 @@ def _record_form(study: Study, a: Analysis, run_id: str, exists: bool) -> None:
         recorder = st.text_input(
             "Recorder id (pseudonym)", value=(prev.recorded_by if prev and prev.recorded_by else "")
         )
+        # Only a box ticked on the form you actually saw can replace a record: if the run
+        # gets recorded by another command meanwhile, this box was not there, stays False,
+        # and the save is refused instead of silently overwriting that record.
+        replace = (
+            st.checkbox("Replace the existing record for this run", value=False)
+            if exists
+            else False
+        )
         submitted = st.form_submit_button("Save record", type="primary")
     if not submitted:
         return
@@ -345,11 +360,23 @@ def _record_form(study: Study, a: Analysis, run_id: str, exists: bool) -> None:
     except ValueError as exc:
         st.error(f"Not saved: {exc}")
         return
-    if exists:
-        merge_records(Study.load(study.root), [record], replace=True, dry_run=False)
-    else:
-        append_jsonl(study.records_path, [record])
+    try:
+        merged = merge_records(Study.load(study.root), [record], replace=replace, dry_run=False)
+    except StudyError as exc:  # e.g. another command is writing to the study right now
+        st.error(f"Not saved: {exc}")
+        st.code(record.model_dump_json(), language="json", wrap_lines=True)
+        return
+    if merged.conflicts:
+        st.error(
+            f"Not saved: run {record.run_id} already has a record (saved by another command "
+            'meanwhile, or "Replace" was not ticked). Your entry is below if you want to '
+            "keep it instead."
+        )
+        st.code(record.model_dump_json(), language="json", wrap_lines=True)
+        return
     st.session_state["mblab_flash"] = f"Saved {record.run_id}."
+    after = next_pending(a.plan, {r.run_id for r in Study.load(study.root).records})
+    st.session_state["mblab_select_next"] = after.run_id if after else None
     st.rerun()
 
 

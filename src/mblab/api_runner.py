@@ -19,7 +19,6 @@ Rules this module keeps (see docs/methodology.md §12):
 from __future__ import annotations
 
 import contextlib
-import json
 import os
 import re
 import signal
@@ -33,12 +32,19 @@ from typing import Any
 
 from mblab.records import build_record
 from mblab.schema import ApiReported, ExperimentDefinition, PlannedRun, RunPlan, RunRecord
-from mblab.study import Study, StudyError, append_jsonl
+from mblab.study import (
+    LOCK_FILE,
+    UNRECORDED_FILE,
+    Study,
+    StudyError,
+    append_json_object,
+    append_jsonl,
+    read_unrecorded_log,
+    write_lock,
+)
 
 API_KEY_ENV = "OPENAI_API_KEY"
-#: Billed responses that arrived but could not be recorded (one JSON object per line).
-UNRECORDED_FILE = "api-unrecorded.jsonl"
-LOCK_FILE = ".run-api.lock"
+__all__ = ["LOCK_FILE", "UNRECORDED_FILE"]  # re-exported: older imports use api_runner's names
 INSTALL_HINT = 'the official_api runner needs the OpenAI SDK: pip install "model-behavior-lab[api]"'
 #: Retries after a transient error (rate limit, connection problem, 5xx).
 DEFAULT_MAX_RETRIES = 2
@@ -65,9 +71,10 @@ def check_api_study(study: Study) -> RunPlan:
             "been sent yet (`mblab validate` lists what changed)."
         )
     if study.load_errors:
+        where = ", ".join(sorted({f"{e.file} line {e.line}" for e in study.load_errors}))
         raise StudyError(
-            "records.jsonl or grades.jsonl has unreadable lines; fix them first (`mblab validate`) "
-            "so no run is sent twice"
+            f"study files have unreadable lines ({where}); fix them first (`mblab validate`) "
+            "so no run is sent, and billed, twice"
         )
     return plan
 
@@ -107,14 +114,15 @@ def pending_runs(
 
 
 def read_unrecorded(root: Path) -> list[dict[str, Any]]:
-    path = root / UNRECORDED_FILE
-    if not path.exists():
-        return []
-    entries = []
-    for line in path.read_text(encoding="utf-8").splitlines():
-        if line.strip():
-            with contextlib.suppress(json.JSONDecodeError):
-                entries.append(json.loads(line))
+    """Entries of the unrecorded-response log. Refuses to guess past a damaged line:
+    a line it could not read might be a billed run that must not be sent again."""
+    entries, errors = read_unrecorded_log(root)
+    if errors:
+        lines = ", ".join(str(e.line) for e in errors)
+        raise StudyError(
+            f"{UNRECORDED_FILE} has unreadable line(s) ({lines}). It lists responses that were "
+            "already billed, so fix it before sending anything"
+        )
     return entries
 
 
@@ -137,30 +145,15 @@ def _log_unrecorded(root: Path, run: PlannedRun, response: Any, reason: str) -> 
         "output_tokens": _get(response, "usage", "output_tokens"),
         "reason": reason,
     }
-    with (root / UNRECORDED_FILE).open("a", encoding="utf-8", newline="\n") as handle:
-        handle.write(json.dumps(entry, ensure_ascii=False, default=str) + "\n")
+    append_json_object(root / UNRECORDED_FILE, entry)
 
 
 # -- safety around sending ------------------------------------------------------------
 
 
-@contextlib.contextmanager
-def study_lock(root: Path) -> Iterator[None]:
-    """Refuse a second sender on the same study (it would pay for the same runs twice)."""
-    path = root / LOCK_FILE
-    try:
-        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-    except FileExistsError:
-        raise StudyError(
-            f"another `mblab run-api` seems to be running on this study ({path} exists). "
-            "If none is running, delete that file and try again."
-        ) from None
-    try:
-        os.write(fd, f"{os.getpid()}\n".encode())
-        os.close(fd)
-        yield
-    finally:
-        path.unlink(missing_ok=True)
+def study_lock(root: Path) -> contextlib.AbstractContextManager[None]:
+    """The study-wide write lock, taken for the whole time requests are being sent."""
+    return write_lock(root, "run-api")
 
 
 @contextlib.contextmanager
@@ -211,6 +204,24 @@ def redact(text: str) -> str:
     if key:
         text = text.replace(key, "[redacted]")
     return _KEY_PATTERN.sub("[redacted]", text)
+
+
+#: Connection errors raised before a request was sent, so it cannot have been billed.
+_NOT_SENT_ERRORS = {"ConnectError", "ConnectTimeout", "PoolTimeout"}
+
+
+def _possibly_billed(exc: BaseException, sdk: Any) -> bool:
+    """True for a connection error that may have happened after the request was sent.
+
+    A read timeout or a dropped connection can come after the API accepted (and billed)
+    the request, so retrying could pay twice. Only failures to connect at all are
+    known to be safe to retry. Without a recognisable cause, assume it was billed.
+    """
+    if not isinstance(exc, sdk.APIConnectionError):
+        return False
+    cause = exc.__cause__
+    names = {cls.__name__ for cls in type(cause).__mro__} if cause is not None else set()
+    return not (names & _NOT_SENT_ERRORS)
 
 
 def _is_transient(exc: BaseException, sdk: Any) -> bool:
@@ -299,6 +310,8 @@ class RunOutcome:
 @dataclass
 class ApiRunResult:
     recorded: list[RunOutcome] = field(default_factory=list)
+    #: Runs not sent because another command recorded or held them after they were chosen.
+    skipped: list[PlannedRun] = field(default_factory=list)
     stopped_at: PlannedRun | None = None
     stop_reason: str | None = None
 
@@ -323,18 +336,25 @@ def send_runs(
     Stops at the first run that cannot be completed and reports why; earlier
     records are already saved.
     """
-    plan = study.require_plan()
-    definition = study.definition
     client_version = f"openai-python {getattr(sdk, '__version__', 'unknown')}"
     result = ApiRunResult()
     with study_lock(study.root):
-        held = (
-            set() if resend_unrecorded else unrecorded_run_ids(study.root, study.recorded_run_ids())
+        # Read the study again inside the lock: runs recorded or held by another command
+        # since `runs` was chosen must not be sent (and billed) a second time.
+        fresh = Study.load(study.root)
+        plan = check_api_study(fresh)
+        definition = fresh.definition
+        recorded = fresh.recorded_run_ids()
+        held: set[str] = (
+            set()
+            if resend_unrecorded
+            else {e["run_id"] for e in read_unrecorded(study.root) if e["run_id"] not in recorded}
         )
         last_start: float | None = None
         for run in runs:
-            if run.run_id in held or run.run_id in study.recorded_run_ids():
-                continue  # never pay twice for a run that already has a response
+            if run.run_id in recorded or run.run_id in held:
+                result.skipped.append(run)  # never pay twice for a run that already has a response
+                continue
             request = build_request(definition, run)
             failures: list[str] = []
             while True:
@@ -349,6 +369,15 @@ def send_runs(
                     response = client.responses.create(**request)
                 except sdk.OpenAIError as exc:
                     message = redact(f"{type(exc).__name__}: {exc}")
+                    if _possibly_billed(exc, sdk):
+                        _log_unrecorded(study.root, run, None, f"possibly billed: {message}")
+                        result.stopped_at = run
+                        result.stop_reason = (
+                            f"{message}. The request may have reached the API and been billed, "
+                            f"so the run is listed in {UNRECORDED_FILE} and held back "
+                            "(--resend-unrecorded sends it again)"
+                        )
+                        return result
                     if _is_transient(exc, sdk) and len(failures) < max_retries:
                         failures.append(type(exc).__name__)
                         delay = retry_wait * 2 ** (len(failures) - 1)
@@ -392,6 +421,7 @@ def send_runs(
                     )
                     return result
                 append_jsonl(study.records_path, [record])
+                recorded.add(run.run_id)
                 study.records.append(record)
             outcome = RunOutcome(run, record, len(failures))
             result.recorded.append(outcome)

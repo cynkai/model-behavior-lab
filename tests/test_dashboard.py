@@ -122,3 +122,51 @@ def test_pilot_study_shows_the_pilot_banner(monkeypatch, study_dir):
     for page in PAGES:
         _goto(at, page)
         assert any("PILOT DATA" in w.value for w in at.warning), page
+
+
+def test_a_run_saved_meanwhile_is_not_overwritten(monkeypatch, study_dir, definition, plan):
+    from mblab.study import append_jsonl
+
+    from .conftest import make_record
+
+    at = _goto(_app(monkeypatch, study_dir), "Run plan & recording")
+    by_label = {w.label: w for w in at.text_input}
+    by_label["Client (app) version"].input("1.0")
+    at.text_area[0].input("ANSWER: 265")
+    # Another command records the same run while the form is open.
+    append_jsonl(
+        study_dir / "records.jsonl",
+        [make_record(definition, plan, "B:T1:r1", notes="other writer")],
+    )
+    at.button[0].click().run()
+    assert not at.exception, at.exception
+    assert any("already has a record" in e.value for e in at.error)
+    (kept,) = Study.load(study_dir).records
+    assert kept.notes == "other writer"
+
+
+def test_saving_moves_on_and_replacing_needs_the_tick(monkeypatch, study_dir, definition, plan):
+    from mblab.study import write_jsonl
+
+    from .conftest import make_record
+
+    at = _goto(_app(monkeypatch, study_dir), "Run plan & recording")
+    {w.label: w for w in at.text_input}["Client (app) version"].input("1.0")
+    at.text_area[0].input("ANSWER: 265")
+    at.button[0].click().run()
+    assert at.selectbox(key="run-select").value == "B:T5:r1"  # the next pending run
+
+    write_jsonl(
+        study_dir / "records.jsonl", [make_record(definition, plan, "B:T1:r1", notes="first")]
+    )
+    at = _goto(_app(monkeypatch, study_dir), "Run plan & recording")
+    at.selectbox(key="run-select").set_value("B:T1:r1").run()
+    assert any("already has a record" in w.value for w in at.warning)
+    {w.label: w for w in at.text_input}["Notes"].input("second")
+    at.text_area[0].input("ANSWER: 265")
+    at.checkbox[-1].check()  # "Replace the existing record for this run"
+    at.button[0].click().run()
+    assert not at.exception, at.exception
+    (record,) = [r for r in Study.load(study_dir).records if r.run_id == "B:T1:r1"]
+    assert record.notes == "second"
+    assert (study_dir / "records.jsonl.bak").exists()

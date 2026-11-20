@@ -158,16 +158,31 @@ Every command takes `--study/-s DIR` (default: the current directory, or `$MBLAB
 
 ```text
 my-study/
-  experiment.yaml   # the pre-registered definition (you edit this before collecting)
-  plan.json         # randomized order + definition hash and snapshot
-  records.jsonl     # one observed run per line
-  grades.jsonl      # manual grades, if a task is graded by hand
-  grading/          # blind sheet (for graders) and its key (not for graders)
-  reports/          # report.md, analysis.json
-  exports/          # entry template, results.csv / results.json
+  experiment.yaml       # the pre-registered definition (you edit this before collecting)
+  plan.json             # randomized order + definition hash and snapshot
+  records.jsonl         # one observed run per line
+  records.jsonl.bak     # the previous records.jsonl, kept whenever a record is replaced
+  grades.jsonl          # manual grades, if a task is graded by hand
+  api-unrecorded.jsonl  # official_api studies: billed responses that could not be recorded
+  grading/              # blind sheet (for graders) and its key (not for graders)
+  reports/              # report.md (and the JSON from `mblab analyze --json`)
+  exports/              # entry template, results.csv / results.json
+  .mblab.lock           # exists only while a command is writing to the study
 ```
 
 Everything is a local file. There is no database and no server-side component.
+
+- **No lost or doubled runs.** Every command that writes to a study (`record`, `import`,
+  the dashboard form, `grade import`, `plan`, `run-api`) takes one study-wide lock and
+  reads the files again inside it. They can run side by side: a second writer is told to
+  wait, and a run saved by one is never overwritten or sent again by another.
+- **Damaged lines are never deleted.** A line that cannot be read stays exactly as it
+  was, a rewrite keeps the previous file as `records.jsonl.bak`, and `mblab validate`
+  reports the line so you can fix it.
+- **Spreadsheets.** CSV files written by mblab (entry template, blind grading sheet,
+  results export) are UTF-8 with a byte-order mark, so spreadsheet apps read them
+  correctly. Save them back as "CSV UTF-8". On import, a `prompt_text` that differs from
+  the planned prompt is refused unless the row records a `protocol_deviation`.
 
 ## The first experiment
 

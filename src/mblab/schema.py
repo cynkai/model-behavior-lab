@@ -213,8 +213,8 @@ class NumericScoring(StrictModel):
     method: Literal["numeric"]
     extract: ExtractMode = "answer_line"
     answer_label: str = "ANSWER"
-    expected: float
-    abs_tolerance: float = Field(default=0.0, ge=0)
+    expected: float = Field(allow_inf_nan=False)
+    abs_tolerance: float = Field(default=0.0, ge=0, allow_inf_nan=False)
 
 
 class ManualScoring(StrictModel):
@@ -575,10 +575,10 @@ class RunRecord(StrictModel):
     observed_label_location: str | None = None
     thinking_indicator: ThinkingIndicator = "unknown"
     thinking_text: str | None = None
-    thinking_seconds: float | None = Field(default=None, ge=0)
+    thinking_seconds: float | None = Field(default=None, ge=0, allow_inf_nan=False)
 
     # Timing, with the instrument that produced it.
-    latency_seconds: float | None = Field(default=None, ge=0)
+    latency_seconds: float | None = Field(default=None, ge=0, allow_inf_nan=False)
     latency_method: LatencyMethod = "not_measured"
     latency_confidence: Confidence | None = None
 
@@ -668,8 +668,8 @@ class RunRecord(StrictModel):
 class ManualGrade(StrictModel):
     schema_version: Literal[1] = 1
     run_id: str = Field(min_length=1)
-    points: float = Field(ge=0)
-    max_points: float = Field(gt=0)
+    points: float = Field(ge=0, allow_inf_nan=False)
+    max_points: float = Field(gt=0, allow_inf_nan=False)
     grader_id: str = Field(min_length=1)
     blind: bool
     graded_at: AwareDatetime

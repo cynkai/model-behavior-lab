@@ -2,15 +2,29 @@
 
 ## Unreleased
 
-- `mblab run-api` no longer loses or re-buys billed responses: responses that cannot be
-  recorded are logged in `api-unrecorded.jsonl` and held back (`--resend-unrecorded`),
-  Ctrl+C waits until a received response is written, and a lock file refuses a second
-  sender on the same study.
-- Refusal content returned next to text is kept in `api_reported.refusal`.
-- API token totals include excluded runs, and unrecorded billed responses are listed as a
-  limitation.
+### Data integrity
 
-## Unreleased
+- Every command that writes to a study (`record`, `import`, the dashboard form,
+  `grade import`, `plan`, `run-api`) takes one study-wide lock (`.mblab.lock`) and reads
+  the files again inside it. A run saved by one command is never overwritten, lost, or
+  sent again by another; a second writer is told to wait. Locks left by a process that no
+  longer exists are cleared automatically.
+- Rewriting `records.jsonl` (import with `--replace`, replacing a record) keeps lines it
+  cannot read byte for byte and keeps the previous file as `records.jsonl.bak`. Before,
+  such lines were silently dropped.
+- Appending no longer glues a record onto a last line without a newline, and each line is
+  decoded on its own, so one damaged character no longer makes a study unloadable.
+- `run-api` re-reads the study under the lock and skips runs recorded meanwhile; read
+  timeouts and dropped connections (possibly billed) are logged and held back instead of
+  retried; a damaged `api-unrecorded.jsonl` stops sending instead of being skipped.
+- The dashboard form no longer switches runs or overwrites a run recorded meanwhile;
+  replacing a record needs an explicit tick. `mblab record` saves an entry it cannot store
+  to `exports/unsaved-<run>.jsonl` instead of losing it.
+- CSV files written by mblab are UTF-8 with a byte-order mark; non-UTF-8 CSV files get a
+  clear error; a CSV `prompt_text` that differs from the planned prompt needs a
+  `protocol_deviation`. Infinite or NaN numbers are rejected.
+
+### Official-API studies and pilots
 
 - Official-API execution method: `mblab run-api` sends the planned runs of an
   `official_api` study through the OpenAI Responses API (`reasoning.effort`) with the
@@ -26,6 +40,14 @@
   (`pilot: true`, labelled PILOT in reports, CLI, and dashboard) to rehearse the protocol,
   and `mblab labels` lists displayed labels verbatim so `observed_label_aliases` can be
   settled before the main study is planned.
+
+- `mblab run-api` no longer loses or re-buys billed responses: responses that cannot be
+  recorded are logged in `api-unrecorded.jsonl` and held back (`--resend-unrecorded`),
+  Ctrl+C waits until a received response is written, and a lock file refuses a second
+  sender on the same study.
+- Refusal content returned next to text is kept in `api_reported.refusal`.
+- API token totals include excluded runs, and unrecorded billed responses are listed as a
+  limitation.
 
 ## 0.1.0 — 2026-11-19
 

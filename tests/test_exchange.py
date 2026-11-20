@@ -22,7 +22,7 @@ def _template_rows(study_dir):
     study = Study.load(study_dir)
     path = study_dir / "exports" / "t.csv"
     write_template_csv(study, path)
-    with path.open(encoding="utf-8", newline="") as handle:
+    with path.open(encoding="utf-8-sig", newline="") as handle:
         return study, path, list(csv.DictReader(handle))
 
 
@@ -148,3 +148,48 @@ def test_parse_timezone_rejects_garbage():
     with pytest.raises(StudyError):
         parse_timezone("Mars/Olympus")
     assert parse_timezone(None) is None
+
+
+def _one_filled_row(study_dir, **values):
+    study, path, rows = _template_rows(study_dir)
+    row = rows[0]  # B:T1:r1
+    row.update(
+        timestamp="2026-11-20T10:00:00+09:00",
+        client_version="1.0",
+        response_text="ANSWER: 265",
+        **values,
+    )
+    _write_rows(path, [row])
+    return study, path
+
+
+def test_template_is_utf8_with_a_byte_order_mark(study_dir):
+    _, path, _ = _template_rows(study_dir)
+    assert path.read_bytes().startswith(b"\xef\xbb\xbf")
+
+
+def test_prompt_whitespace_changes_keep_the_planned_prompt(study_dir):
+    planned = Study.load(study_dir).definition.task("T1").prompt
+    study, path = _one_filled_row(study_dir, prompt_text=planned.replace("\n", "\r\n") + "  ")
+    (record,) = import_file(study, path).records
+    assert record.prompt_text == planned
+
+
+def test_a_changed_prompt_needs_a_recorded_deviation(study_dir):
+    garbled = "A train departs at 09:47 â€” and arrives at 14:12."
+    study, path = _one_filled_row(study_dir, prompt_text=garbled)
+    result = import_file(study, path)
+    assert result.records == [] and "prompt_text differs from the task prompt" in result.errors[0]
+
+    study, path = _one_filled_row(
+        study_dir, prompt_text=garbled, protocol_deviation="sent a shortened prompt by mistake"
+    )
+    (record,) = import_file(study, path).records
+    assert record.prompt_text == garbled and record.excluded
+
+
+def test_non_utf8_csv_gets_a_clear_error(study_dir):
+    study, path = _one_filled_row(study_dir, notes="café")
+    path.write_bytes(path.read_text(encoding="utf-8-sig").encode("cp1252"))
+    with pytest.raises(StudyError, match=r'not UTF-8 text.*"CSV UTF-8"'):
+        import_file(study, path)

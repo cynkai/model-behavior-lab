@@ -137,6 +137,35 @@ mblab report -s my-study
 | `mblab dashboard` | 로컬 웹 대시보드(`dashboard` 추가 설치 필요) |
 | `mblab demo DIR` | 합성 데모 실험 생성 |
 
+## 실험 디렉터리
+
+```text
+my-study/
+  experiment.yaml       # 사전 등록한 정의(데이터를 모으기 전에 고침)
+  plan.json             # 무작위 실행 순서 + 정의 해시와 스냅샷
+  records.jsonl         # 관측한 실행 하나당 한 줄
+  records.jsonl.bak     # 기록을 교체할 때마다 남기는 직전 records.jsonl
+  grades.jsonl          # 수동 채점 과제가 있을 때의 점수
+  api-unrecorded.jsonl  # official_api 실험: 청구됐지만 기록하지 못한 응답
+  grading/              # 블라인드 채점지(채점자용)와 키(채점자에게 주지 않음)
+  reports/              # report.md(그리고 `mblab analyze --json`의 JSON)
+  exports/              # 입력용 CSV, results.csv / results.json
+  .mblab.lock           # 명령이 실험 파일을 쓰는 동안에만 존재
+```
+
+모든 데이터는 로컬 파일입니다. 데이터베이스나 서버 쪽 구성 요소는 없습니다.
+
+- **실행이 사라지거나 두 번 기록되지 않습니다.** 실험 파일을 쓰는 모든 명령(`record`,
+  `import`, 대시보드 입력 양식, `grade import`, `plan`, `run-api`)이 실험 단위 잠금 하나를
+  잡고 그 안에서 파일을 다시 읽습니다. 동시에 실행해도 두 번째 명령은 기다리라는 안내를
+  받고, 한쪽이 저장한 실행을 다른 쪽이 덮어쓰거나 다시 보내지 않습니다.
+- **손상된 줄은 지우지 않습니다.** 읽을 수 없는 줄은 그대로 두고, 파일을 다시 쓸 때는 직전
+  파일을 `records.jsonl.bak`으로 남깁니다. `mblab validate`가 그 줄을 알려 줍니다.
+- **스프레드시트.** mblab이 쓰는 CSV(입력용 템플릿, 블라인드 채점지, 결과 내보내기)는
+  스프레드시트 앱이 바로 읽을 수 있도록 BOM이 붙은 UTF-8입니다. 저장할 때도 "CSV UTF-8"로
+  저장하세요. 가져올 때 `prompt_text`가 계획된 프롬프트와 다르면, 그 행에
+  `protocol_deviation`이 적혀 있지 않은 한 거부합니다.
+
 ## 첫 번째 실험
 
 **ChatGPT Model Selection Override Experiment** — 기본 템플릿

@@ -14,6 +14,26 @@ _DURATION_PART = re.compile(
     re.IGNORECASE,
 )
 _UNIT_SECONDS = {"h": 3600, "시": 3600, "m": 60, "분": 60, "s": 1, "초": 1}
+#: "1,050" could be 1050 (thousands separator) or 1.050 (decimal comma).
+_GROUPED_THOUSANDS = re.compile(r"\d{1,3}(?:,\d{3})+")
+
+
+def parse_decimal(text: str, what: str) -> float:
+    """A number typed by hand: "12.5" or "12,5" (decimal comma).
+
+    A value such as "1,050" is refused: read as a decimal comma it is 1.05, read as a
+    thousands separator 1050, and guessing would silently be off by a factor of 1000.
+    """
+    value = text.strip()
+    if _GROUPED_THOUSANDS.fullmatch(value):
+        raise ValueError(
+            f"{what} {text!r} is ambiguous (1050 or 1.05?); write it without a thousands "
+            "separator, e.g. 1050 or 1.05"
+        )
+    try:
+        return float(value.replace(",", "."))
+    except ValueError:
+        raise ValueError(f"{what} {text!r} is not a number") from None
 
 
 def parse_thinking_seconds(text: str | None) -> float | None:
@@ -27,6 +47,8 @@ def parse_thinking_seconds(text: str | None) -> float | None:
     total = 0.0
     found = False
     for number, unit in _DURATION_PART.findall(text):
+        if _GROUPED_THOUSANDS.fullmatch(number):
+            return None  # "1,050 seconds": ambiguous, so no number (the text is kept)
         found = True
         total += float(number.replace(",", ".")) * _UNIT_SECONDS[unit[0].lower()]
     return total if found else None

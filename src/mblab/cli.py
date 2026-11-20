@@ -44,7 +44,7 @@ from mblab.formatting import (
 from mblab.grading import export_blind_sheet, import_blind_sheet
 from mblab.pilot import PILOT_BANNER, create_pilot_study, displayed_labels
 from mblab.plan import generate_plan
-from mblab.records import build_record, condition_instructions, next_pending
+from mblab.records import build_record, condition_instructions, next_pending, parse_decimal
 from mblab.report import render_report
 from mblab.schema import PlannedRun, RunRecord
 from mblab.stats import Interval
@@ -210,9 +210,9 @@ def _optional_float(text: str, what: str) -> float | None:
     if not text:
         return None
     try:
-        return float(text.replace(",", "."))
-    except ValueError:
-        raise StudyError(f"{what}: {text!r} is not a number") from None
+        return parse_decimal(text, what)
+    except ValueError as exc:
+        raise StudyError(str(exc)) from None
 
 
 # -- commands: setup ---------------------------------------------------------------------

@@ -18,7 +18,13 @@ import yaml
 
 from mblab.plan import generate_plan
 from mblab.records import build_record
-from mblab.schema import ExperimentDefinition, NumericScoring, RunRecord
+from mblab.schema import (
+    DateScoring,
+    ExperimentDefinition,
+    NumericScoring,
+    RunRecord,
+    SequenceScoring,
+)
 from mblab.study import (
     DEFINITION_FILE,
     PLAN_FILE,
@@ -44,7 +50,15 @@ _HEADER = (
 def _wrong_answer(definition: ExperimentDefinition, task_id: str, rng: random.Random) -> str:
     rule = definition.task(task_id).scoring
     if isinstance(rule, NumericScoring):
-        return f"{rule.expected + rng.choice([-3, -2, -1, 1, 2, 10]):g}"
+        delta = rng.choice([-3, -2, -1, 1, 2, 10])
+        if isinstance(rule.expected, list):
+            wrong = [rule.expected[0] + delta, *rule.expected[1:]]
+            return "(" + ", ".join(f"{v:g}" for v in wrong) + ")"
+        return f"{rule.expected + delta:g}"
+    if isinstance(rule, DateScoring):
+        return (rule.expected + timedelta(days=rng.choice([-1, 1, 2]))).isoformat()
+    if isinstance(rule, SequenceScoring):
+        return ", ".join(reversed(rule.expected))
     return "unknown"
 
 

@@ -150,6 +150,10 @@ tasks:
     scoring:
       method: numeric
       expected: 265
+    answer_examples:
+      correct: ["265", "265 minutes", "**265**"]
+      incorrect: ["264", "4.4"]
+      unreadable: ["4 hours 25 minutes", "265 or 266"]
 
   - id: T2
     title: Calendar offset
@@ -163,9 +167,14 @@ tasks:
       ANSWER: <your answer>
     reference_answer: "2027-02-27"
     scoring:
-      method: regex
-      # The date, and no other digits, on the answer line.
-      pattern: '^\D*2027-02-27\D*$'
+      # Exactly one YYYY-MM-DD date on the answer line; other text, such as the
+      # weekday, is ignored. A date in another format is unreadable, not wrong.
+      method: date
+      expected: 2027-02-27
+    answer_examples:
+      correct: ["2027-02-27", "2027-02-27 (Saturday, 27 February 2027)"]
+      incorrect: ["2027-02-26", "2027-02-28 (Sunday)"]
+      unreadable: ["27 February 2027", "2027-02-27 or 2027-02-28"]
 
   - id: T3
     title: Letter count
@@ -183,6 +192,10 @@ tasks:
     scoring:
       method: numeric
       expected: 22
+    answer_examples:
+      correct: ["22", "22 times"]
+      incorrect: ["21", "23"]
+      unreadable: ["twenty-two"]
 
   - id: T4
     title: Seating puzzle
@@ -204,10 +217,17 @@ tasks:
       ANSWER: <your answer>
     reference_answer: "Ben, Cho, Eun, Dev, Ana"
     scoring:
-      method: regex
-      # The five names in this order, any separators, nothing else.
-      pattern: '^\W*ben\W+cho\W+eun\W+dev\W+ana\W*$'
-      ignore_case: true
+      # Each name exactly once, in this order; separators such as commas, "and",
+      # or chair numbers are ignored. A missing or repeated name is unreadable.
+      method: sequence
+      expected: [Ben, Cho, Eun, Dev, Ana]
+    answer_examples:
+      correct:
+        - "Ben, Cho, Eun, Dev, and Ana"
+        - "1. Ben, 2. Cho, 3. Eun, 4. Dev, 5. Ana"
+        - "ben cho eun dev ana"
+      incorrect: ["Ben, Cho, Eun, Ana, Dev", "Cho, Ben, Eun, Dev, Ana"]
+      unreadable: ["Ben, Cho, Eun, Dev", "Ben, Cho, Eun, Dev, Ana, Ben"]
 
   - id: T5
     title: Digit-sum count
@@ -223,6 +243,10 @@ tasks:
     scoring:
       method: numeric
       expected: 633
+    answer_examples:
+      correct: ["633"]
+      incorrect: ["632", "715"]
+      unreadable: ["about six hundred"]
 
   - id: T6
     title: Code trace
@@ -245,6 +269,10 @@ tasks:
       ANSWER: <your answer>
     reference_answer: "(37, 13)"
     scoring:
-      method: exact_match
-      accepted: ["(37, 13)", "37, 13"]
-      normalize: [strip_markdown, remove_whitespace, strip_edge_punctuation]
+      # Exactly these two numbers in this order; brackets and words are ignored.
+      method: numeric
+      expected: [37, 13]
+    answer_examples:
+      correct: ["(37, 13)", "37, 13", "It prints (37, 13)"]
+      incorrect: ["(13, 37)", "(37, 12)"]
+      unreadable: ["(37, 13, 2027)", "37"]

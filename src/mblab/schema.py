@@ -209,12 +209,59 @@ class RegexScoring(StrictModel):
         return value
 
 
+FiniteFloat = Annotated[float, Field(allow_inf_nan=False)]
+
+
 class NumericScoring(StrictModel):
     method: Literal["numeric"]
     extract: ExtractMode = "answer_line"
     answer_label: str = "ANSWER"
-    expected: float = Field(allow_inf_nan=False)
+    expected: FiniteFloat | list[FiniteFloat] = Field(
+        description=(
+            "One number, or a list: the answer must then hold exactly these numbers in this "
+            "order, e.g. [37, 13] for a pair."
+        )
+    )
     abs_tolerance: float = Field(default=0.0, ge=0, allow_inf_nan=False)
+
+    @field_validator("expected")
+    @classmethod
+    def _list_has_two(cls, value: float | list[float]) -> float | list[float]:
+        if isinstance(value, list) and len(value) < 2:
+            raise ValueError("a list of expected numbers needs at least two; use a number")
+        return value
+
+
+class DateScoring(StrictModel):
+    """The answer holds exactly one YYYY-MM-DD date (other text, such as a weekday, is
+    ignored); it must equal ``expected``. No such date, or two different ones, is a
+    format failure, not a wrong answer."""
+
+    method: Literal["date"]
+    extract: ExtractMode = "answer_line"
+    answer_label: str = "ANSWER"
+    expected: date
+
+
+class SequenceScoring(StrictModel):
+    """The answer names each item exactly once (whole words, any case, any separators
+    such as commas, "and", or "1."), in the expected order. A missing or repeated item is
+    a format failure; the same items in another order are a wrong answer."""
+
+    method: Literal["sequence"]
+    extract: ExtractMode = "answer_line"
+    answer_label: str = "ANSWER"
+    expected: list[str] = Field(min_length=2)
+
+    @field_validator("expected")
+    @classmethod
+    def _distinct_words(cls, value: list[str]) -> list[str]:
+        folded = [v.strip().casefold() for v in value]
+        if any(not v or not re.fullmatch(r"\w+(?: \w+)*", v) for v in folded):
+            raise ValueError("sequence items must be words (letters, digits, spaces)")
+        if len(set(folded)) != len(folded):
+            raise ValueError("sequence items must be distinct")
+        return [v.strip() for v in value]
 
 
 class ManualScoring(StrictModel):
@@ -231,9 +278,28 @@ class ManualScoring(StrictModel):
 
 
 Scoring = Annotated[
-    ExactMatchScoring | RegexScoring | NumericScoring | ManualScoring,
+    ExactMatchScoring
+    | RegexScoring
+    | NumericScoring
+    | DateScoring
+    | SequenceScoring
+    | ManualScoring,
     Field(discriminator="method"),
 ]
+
+
+class AnswerExamples(StrictModel):
+    """Answers fixed in advance with how the rule must score them.
+
+    Checked whenever the definition loads, like the reference answer: each ``correct``
+    example must score correct, each ``incorrect`` one must be read and scored wrong, and
+    each ``unreadable`` one must be a format failure. They document what the rule
+    accepts before any data is seen.
+    """
+
+    correct: list[str] = Field(default_factory=list)
+    incorrect: list[str] = Field(default_factory=list)
+    unreadable: list[str] = Field(default_factory=list)
 
 
 class Task(StrictModel):
@@ -246,7 +312,13 @@ class Task(StrictModel):
     prompt: str = Field(min_length=1, description="Sent verbatim, identical across runs.")
     reference_answer: str | None = None
     scoring: Scoring
+    answer_examples: AnswerExamples | None = None
     source: str | None = None
+
+    @model_serializer(mode="wrap")
+    def _serialize(self, handler: Any) -> dict[str, Any]:
+        # Omitted examples stay omitted, so older definitions keep their hash.
+        return _drop_unset(handler(self), "answer_examples")
 
     @property
     def is_automatic(self) -> bool:
@@ -451,6 +523,8 @@ class ExperimentDefinition(StrictModel):
                 error = check_reference_answer(task)
                 if error:
                     problems.append(f"task '{task.id}': {error}")
+            elif task.answer_examples is not None:
+                problems.append(f"task '{task.id}': answer_examples need automatic scoring")
         if problems:
             raise ValueError("; ".join(problems))
         return self

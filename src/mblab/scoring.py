@@ -7,8 +7,9 @@ the response and compare it with the rule in the experiment definition. The
 Outcomes are kept apart on purpose:
 
 * ``scored`` — an answer was found and judged (correct or incorrect).
-* ``format_failure`` — no usable answer could be extracted. Counted as
-  incorrect in accuracy, but reported separately, because a formatting habit is
+* ``format_failure`` — no usable answer could be extracted or read (no answer
+  line, no number, two different dates, a name missing from a sequence). Counted
+  as incorrect in accuracy, but reported separately, because a formatting habit is
   not the same thing as a wrong answer.
 * ``pending_manual`` — a manually graded task without a grade yet. Excluded.
 * ``not_scorable`` — the client returned an error, a refusal, or an incomplete
@@ -24,11 +25,13 @@ from statistics import fmean
 from typing import Literal
 
 from mblab.schema import (
+    DateScoring,
     ExactMatchScoring,
     ManualGrade,
     NumericScoring,
     RegexScoring,
     RunRecord,
+    SequenceScoring,
     Task,
 )
 
@@ -39,6 +42,8 @@ _EDGE_MARKDOWN = "*_~`"
 _EDGE_PUNCTUATION = " \t\"'“”‘’.,;:!?"
 _NUMBER_RE = re.compile(r"[-−]?\d+(?:\.\d+)?")
 _THOUSANDS_RE = re.compile(r"(?<=\d),(?=\d{3}(?!\d))")
+_ISO_DATE_RE = re.compile(r"(?<!\d)\d{4}-\d{2}-\d{2}(?!\d)")
+AUTOMATIC_RULES = (ExactMatchScoring, RegexScoring, NumericScoring, DateScoring, SequenceScoring)
 
 
 @dataclass(frozen=True)
@@ -51,6 +56,9 @@ class ScoreResult:
     source: ScoreSource
     n_graders: int = 0
     grader_disagreement: bool = False
+    #: The answer as the rule read it ("265", "2027-02-27", "Ben, Cho, Eun, Dev, Ana"), so
+    #: answers that differ only in wording count as one when distinct answers are counted.
+    canonical: str | None = None
 
 
 def _answer_line_re(label: str) -> re.Pattern[str]:
@@ -121,34 +129,95 @@ def parse_single_number(text: str) -> tuple[float | None, str]:
     return values.pop(), "one number"
 
 
+def parse_numbers(text: str) -> list[float]:
+    """Every number in ``text``, in order (thousands separators allowed)."""
+    cleaned = _THOUSANDS_RE.sub("", text)
+    return [float(m.replace("−", "-")) for m in _NUMBER_RE.findall(cleaned)]
+
+
+def find_sequence(text: str, items: Sequence[str]) -> tuple[list[str] | None, str]:
+    """The items in the order ``text`` names them, or ``None`` if one is missing or repeated."""
+    positions: dict[str, int] = {}
+    problems = []
+    for item in items:
+        pattern = r"(?<!\w)" + r"\s+".join(map(re.escape, item.split())) + r"(?!\w)"
+        found = [m.start() for m in re.finditer(pattern, text, re.IGNORECASE)]
+        if len(found) != 1:
+            problems.append(f"{item} named {len(found)} times")
+        else:
+            positions[item] = found[0]
+    if problems:
+        return None, "; ".join(problems)
+    return sorted(items, key=positions.__getitem__), "each item named once"
+
+
+def _scored(ok: bool, answer: str, why: str, canonical: str) -> ScoreResult:
+    return ScoreResult("scored", ok, float(ok), answer, why, "automatic", canonical=canonical)
+
+
+def _unreadable(answer: str | None, why: str) -> ScoreResult:
+    return ScoreResult("format_failure", False, 0.0, answer, why, "automatic")
+
+
 def score_automatic(task: Task, response_text: str) -> ScoreResult:
     rule = task.scoring
-    if not isinstance(rule, ExactMatchScoring | RegexScoring | NumericScoring):
+    if not isinstance(rule, AUTOMATIC_RULES):
         raise TypeError(f"task '{task.id}' is not automatically scored")
 
     answer, detail = extract_answer(response_text, rule.extract, rule.answer_label)
     if answer is None:
-        return ScoreResult("format_failure", False, 0.0, None, detail, "automatic")
+        return _unreadable(None, detail)
 
     if isinstance(rule, ExactMatchScoring):
         got = normalize_text(answer, rule.normalize)
         accepted = {normalize_text(a, rule.normalize) for a in rule.accepted}
         ok = got in accepted
         why = "matches an accepted answer" if ok else "does not match any accepted answer"
-        return ScoreResult("scored", ok, float(ok), answer, why, "automatic")
+        return _scored(ok, answer, why, got)
 
     if isinstance(rule, RegexScoring):
         flags = re.IGNORECASE if rule.ignore_case else 0
         ok = re.search(rule.pattern, answer, flags) is not None
         why = "matches the pattern" if ok else "does not match the pattern"
-        return ScoreResult("scored", ok, float(ok), answer, why, "automatic")
+        return _scored(ok, answer, why, " ".join(answer.split()).casefold())
+
+    if isinstance(rule, DateScoring):
+        dates = sorted(set(_ISO_DATE_RE.findall(answer)))
+        if not dates:
+            return _unreadable(answer, "no YYYY-MM-DD date in the answer")
+        if len(dates) > 1:
+            return _unreadable(answer, f"more than one date in the answer ({', '.join(dates)})")
+        expected = rule.expected.isoformat()
+        why = f"read {dates[0]}; expected {expected}"
+        return _scored(dates[0] == expected, answer, why, dates[0])
+
+    if isinstance(rule, SequenceScoring):
+        order, why = find_sequence(answer, rule.expected)
+        if order is None:
+            return _unreadable(answer, why)
+        got = ", ".join(order)
+        ok = [i.casefold() for i in order] == [i.casefold() for i in rule.expected]
+        return _scored(ok, answer, f"read {got}; expected {', '.join(rule.expected)}", got)
+
+    if isinstance(rule.expected, list):
+        values = parse_numbers(answer)
+        if len(values) != len(rule.expected):
+            return _unreadable(
+                answer, f"expected {len(rule.expected)} numbers, found {len(values)}"
+            )
+        ok = all(
+            abs(v - e) <= rule.abs_tolerance for v, e in zip(values, rule.expected, strict=True)
+        )
+        got = ", ".join(f"{v:g}" for v in values)
+        expected = ", ".join(f"{e:g}" for e in rule.expected)
+        return _scored(ok, answer, f"read {got}; expected {expected} ± {rule.abs_tolerance:g}", got)
 
     value, parse_detail = parse_single_number(answer)
     if value is None:
-        return ScoreResult("format_failure", False, 0.0, answer, parse_detail, "automatic")
+        return _unreadable(answer, parse_detail)
     ok = abs(value - rule.expected) <= rule.abs_tolerance
     why = f"parsed {value:g}; expected {rule.expected:g} ± {rule.abs_tolerance:g}"
-    return ScoreResult("scored", ok, float(ok), answer, why, "automatic")
+    return _scored(ok, answer, why, f"{value:g}")
 
 
 def score_record(task: Task, record: RunRecord, grades: Sequence[ManualGrade] = ()) -> ScoreResult:
@@ -176,19 +245,37 @@ def score_record(task: Task, record: RunRecord, grades: Sequence[ManualGrade] = 
     )
 
 
+def _as_response(task: Task, answer: str) -> str:
+    rule = task.scoring
+    return f"{rule.answer_label}: {answer}" if rule.extract == "answer_line" else answer
+
+
 def check_reference_answer(task: Task) -> str | None:
-    """Return an error message if the reference answer fails its own scoring rule."""
+    """An error message if the reference answer or an answer example breaks the rule.
+
+    The reference answer and every ``answer_examples.correct`` entry must score correct,
+    every ``incorrect`` entry must be read and scored wrong, and every ``unreadable``
+    entry must be a format failure.
+    """
     rule = task.scoring
     if rule.method == "manual" or task.reference_answer is None:
         return None
-    if rule.extract == "answer_line":
-        response = f"{rule.answer_label}: {task.reference_answer}"
-    else:
-        response = task.reference_answer
-    result = score_automatic(task, response)
-    if not result.correct:
-        return (
-            f"reference_answer {task.reference_answer!r} is not scored correct by its own "
-            f"rule ({result.detail})"
+    examples = task.answer_examples
+    expectations = [(task.reference_answer, "correct", "reference_answer")]
+    if examples is not None:
+        expectations += [(a, "correct", "correct example") for a in examples.correct]
+        expectations += [(a, "incorrect", "incorrect example") for a in examples.incorrect]
+        expectations += [(a, "unreadable", "unreadable example") for a in examples.unreadable]
+    for answer, wanted, what in expectations:
+        result = score_automatic(task, _as_response(task, answer))
+        got = (
+            "unreadable"
+            if result.status == "format_failure"
+            else ("correct" if result.correct else "incorrect")
         )
+        if got != wanted:
+            return (
+                f"{what} {answer!r} is not scored {wanted} by its own rule "
+                f"(it is {got}: {result.detail})"
+            )
     return None

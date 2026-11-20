@@ -128,6 +128,7 @@ def test_definition_change_after_collection_is_flagged(study_dir, definition, pl
     data = yaml.safe_load(template_text())
     data["tasks"][4]["scoring"]["expected"] = 634
     data["tasks"][4]["reference_answer"] = "634"
+    data["tasks"][4].pop("answer_examples")  # they pin 633
     (study_dir / "experiment.yaml").write_text(yaml.safe_dump(data), encoding="utf-8")
     report = _validate(study_dir)
     changed = [i for i in report.issues if i.code == "definition_changed"]
@@ -192,6 +193,7 @@ def test_records_carry_the_definition_they_were_collected_under(study_dir, defin
     def change(data):
         data["tasks"][4]["scoring"]["expected"] = 634
         data["tasks"][4]["reference_answer"] = "634"
+        data["tasks"][4].pop("answer_examples")  # they pin 633
 
     edited = _edit_definition(study_dir, change)
     after = make_record(edited, plan, "B:T5:r1")  # recorded after the edit

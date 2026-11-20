@@ -33,6 +33,7 @@ def test_hash_ignores_yaml_formatting_but_tracks_content(definition):
     data = _template_dict()
     data["tasks"][0]["scoring"]["expected"] = 266
     data["tasks"][0]["reference_answer"] = "266"
+    data["tasks"][0].pop("answer_examples")  # they pin 265 as the correct answer
     assert ExperimentDefinition.model_validate(data).sha256() != definition.sha256()
 
 
@@ -43,7 +44,7 @@ def test_hash_ignores_yaml_formatting_but_tracks_content(definition):
         (lambda d: d["conditions"][1].update(id="A"), "duplicate condition id 'A'"),
         (lambda d: d["conditions"][1].update(model_selection="instant"), "identical settings"),
         (
-            lambda d: d["tasks"][1]["scoring"].update(pattern="(unclosed"),
+            lambda d: d["tasks"][1].update(scoring={"method": "regex", "pattern": "(unclosed"}),
             "invalid regular expression",
         ),
         (lambda d: d["tasks"][0].update(reference_answer="264"), "not scored correct by its own"),

@@ -47,7 +47,7 @@ from mblab.formatting import (
     tokens,
 )
 from mblab.pilot import PILOT_BANNER
-from mblab.records import build_record, condition_instructions, next_pending
+from mblab.records import build_record, condition_instructions, next_pending, parse_decimal
 from mblab.report import scoring_text
 from mblab.stats import Interval
 from mblab.study import Study, StudyError, format_validation_error
@@ -340,7 +340,7 @@ def _record_form(study: Study, a: Analysis, run_id: str, exists: bool) -> None:
     if not submitted:
         return
     try:
-        latency = float(latency_text.replace(",", ".")) if latency_text.strip() else None
+        latency = parse_decimal(latency_text, "stopwatch seconds") if latency_text.strip() else None
         if sent_text.strip():
             sent = datetime.fromisoformat(sent_text.strip())
         else:

@@ -24,7 +24,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from pydantic import ValidationError
 
 from mblab.csvcells import from_row, to_cell
-from mblab.records import build_record, identity_conflicts
+from mblab.records import build_record, identity_conflicts, parse_decimal
 from mblab.schema import PlannedRun, RunRecord
 from mblab.study import (
     RECORDS_FILE,
@@ -226,7 +226,7 @@ def row_to_record(row: dict[str, str], study: Study, default_tz: tzinfo | None) 
 
     for col in ("thinking_seconds", "latency_seconds"):
         if not _blank(row.get(col)):
-            data[col] = float(row[col].strip().replace(",", "."))
+            data[col] = parse_decimal(row[col], col)
     if not _blank(row.get("latency_method")):
         data["latency_method"] = row["latency_method"].strip()
     elif "latency_seconds" in data:

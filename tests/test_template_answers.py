@@ -74,3 +74,13 @@ def test_t6_code_trace_matches_real_output(definition):
         exec(code, {})  # the snippet is a fixed string from our own template
     assert buffer.getvalue().strip() == "(37, 13)"
     assert definition.task("T6").reference_answer == "(37, 13)"
+
+
+def test_rule_fields_match_the_recomputed_answers(definition):
+    # The 0.2 rules state the answers in their own fields; they must agree with the
+    # independently recomputed values above.
+    assert definition.task("T2").scoring.expected == date(2026, 11, 19) + timedelta(days=100)
+    assert definition.task("T4").scoring.expected == ["Ben", "Cho", "Eun", "Dev", "Ana"]
+    assert definition.task("T6").scoring.expected == [37, 13]
+    for task in definition.tasks:
+        assert task.answer_examples is not None and task.answer_examples.correct

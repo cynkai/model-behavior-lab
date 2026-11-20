@@ -60,7 +60,8 @@ provides.
 - Record observations by hand — interactive CLI, a CSV you fill in a spreadsheet, or a
   form in the local dashboard — and validate them (duplicates, missing runs, prompt
   wording, confounders, client-version changes, mixed demo/real data, personal data).
-- Score responses automatically (exact match, regex, numeric) or by blind manual grading.
+- Score responses automatically (exact match, regex, numeric, date, ordered list of
+  names) or by blind manual grading.
 - Run the same tasks through the provider's **official API** (OpenAI Responses API) to
   compare reasoning-effort levels of one model, as a separate execution method with its
   own studies (`mblab run-api`).
@@ -316,7 +317,11 @@ The full write-up is [docs/methodology.md](docs/methodology.md).
 
 - **Pre-registration.** Scoring rules, label aliases, and hypotheses live in
   `experiment.yaml` and are hashed into the plan. A reference answer must pass its own
-  scoring rule, or the definition is rejected.
+  scoring rule, and pre-registered answer examples must score as declared (correct,
+  wrong, or unreadable), or the definition is rejected. Correct answers in other wordings
+  ("Ben, Cho, Eun, Dev, and Ana", "It prints (37, 13)") score correct.
+- **Typed numbers.** A time such as `1,050` is refused as ambiguous (1050 or 1.05?)
+  instead of being stored 1000 times too small; `12,5` and `12.5` both mean 12.5.
 - **Metrics.** Accuracy (format failures count as incorrect, and are reported
   separately); task success rate (errors and refusals count as failures); response time
   per measurement method, never pooled; thinking-indicator rate; displayed-label classes.

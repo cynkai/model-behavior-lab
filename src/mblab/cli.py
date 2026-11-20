@@ -197,7 +197,8 @@ def _read_multiline() -> str:
     return "\n".join(lines)
 
 
-def _choose(question: str, choices: list[str], default: str) -> str:
+def _choose(question: str, choices: list[str], default: str | None) -> str:
+    """Ask until the answer is one of ``choices``; with no default, an answer is required."""
     while True:
         value = typer.prompt(f"{question} ({'/'.join(choices)})", default=default).strip()
         if value in choices:
@@ -528,8 +529,13 @@ def record(
     )
     confounders: dict[str, str] = {}
     for conf in s.definition.confounders:
-        default = (prev.confounders.get(conf.id) if prev else None) or (
-            "unknown" if "unknown" in conf.allowed_values else conf.allowed_values[0]
+        # A per-run observation (a tool used, a notice shown) is never carried over from
+        # the previous run: pressing Enter must not record what happened last time.
+        default = (
+            None
+            if conf.per_run
+            else (prev.confounders.get(conf.id) if prev else None)
+            or ("unknown" if "unknown" in conf.allowed_values else conf.allowed_values[0])
         )
         confounders[conf.id] = _choose(conf.question, conf.allowed_values, default)
     new_conversation = typer.confirm("Was this a new conversation?", default=True)
@@ -930,6 +936,23 @@ def _print_overrides(a: Analysis) -> None:
                 VERDICT_SHORT[m.verdict],
             )
         console.print(table)
+    if a.sensitivity is not None:
+        check = a.sensitivity
+        reasons = ", ".join(f"{k} ({n})" for k, n in check.reasons.items())
+        console.print(
+            f"Sensitivity check: without the {check.left_out} run(s) with a flagged per-run "
+            f"value ({reasons}), "
+            + (
+                f"{len(check.changes)} of {check.n_assessments} assessments change: "
+                + "; ".join(
+                    f"{c} {m}: {VERDICT_SHORT[b]} -> {VERDICT_SHORT[x]}"
+                    for c, m, b, x in check.changes
+                )
+                if check.changes
+                else f"none of the {check.n_assessments} assessments change."
+            ),
+            markup=False,
+        )
 
 
 def _print_comparisons(a: Analysis) -> None:

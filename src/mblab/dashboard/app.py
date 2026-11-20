@@ -310,15 +310,21 @@ def _record_form(study: Study, a: Analysis, run_id: str, exists: bool) -> None:
         if d.confounders:
             cols = st.columns(min(3, len(d.confounders)))
             for i, conf in enumerate(d.confounders):
-                default = (prev.confounders.get(conf.id) if prev else None) or (
-                    "unknown" if "unknown" in conf.allowed_values else conf.allowed_values[0]
+                # Per-run observations start empty: what the last run showed is not a
+                # default for this one.
+                default = (
+                    None
+                    if conf.per_run
+                    else (prev.confounders.get(conf.id) if prev else None)
+                    or ("unknown" if "unknown" in conf.allowed_values else conf.allowed_values[0])
                 )
                 conf_values[conf.id] = cols[i % len(cols)].selectbox(
                     md_text(conf.question),  # widget labels render Markdown, images included
                     conf.allowed_values,
                     index=conf.allowed_values.index(default)
                     if default in conf.allowed_values
-                    else 0,
+                    else None,
+                    placeholder="Choose what this run showed",
                 )
         new_conversation = st.checkbox("Sent in a new conversation", value=True)
         deviation = st.text_input(
@@ -338,6 +344,10 @@ def _record_form(study: Study, a: Analysis, run_id: str, exists: bool) -> None:
         )
         submitted = st.form_submit_button("Save record", type="primary")
     if not submitted:
+        return
+    unanswered = [c.question for c in d.confounders if conf_values.get(c.id) is None]
+    if unanswered:
+        st.error("Not saved: answer " + "; ".join(md_text(q) for q in unanswered))
         return
     try:
         latency = parse_decimal(latency_text, "stopwatch seconds") if latency_text.strip() else None
@@ -529,6 +539,33 @@ def _ui_label_sections(a: Analysis, mode: str | None, conf: int) -> None:
         with st.expander("What the assessments mean"):
             for m in o.metrics:
                 st.markdown(f"- *{md_text(m.metric)}*: {md_text(m.explanation)}")
+    flags = a.confounder_flags
+    if not flags.empty and int(flags["n_flagged"].sum()):
+        st.markdown(
+            "**Confounders by condition** — runs with a value other than the recommended one"
+        )
+        _table(
+            flags.assign(runs=lambda f: f["n_flagged"].astype(str) + "/" + f["n_runs"].astype(str))
+            .pivot(index="confounder_id", columns="condition_id", values="runs")
+            .reset_index()
+        )
+    if a.sensitivity is not None:
+        check = a.sensitivity
+        reasons = ", ".join(f"{k} ({n})" for k, n in check.reasons.items())
+        st.markdown(
+            f"**Sensitivity check:** without the {check.left_out} run(s) with a flagged "
+            f"per-run value ({md_text(reasons)}), "
+            + (
+                f"{len(check.changes)} of {check.n_assessments} assessments change:"
+                if check.changes
+                else f"none of the {check.n_assessments} assessments change."
+            )
+        )
+        for cond, metric, before, after in check.changes:
+            st.markdown(
+                f"- {md_text(cond)}, {md_text(metric)}: {VERDICT_SHORT[before]} → "
+                f"{VERDICT_SHORT[after]}"
+            )
 
 
 def _comparison_sections(a: Analysis, conf: int) -> None:

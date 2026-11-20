@@ -298,7 +298,14 @@ def _conditions(a: Analysis) -> list[str]:
         f"{d.planned_run_count} runs, "
         + ("one independent API request" if d.api else "one new conversation")
         + " per run, in a randomized order "
-        f"(seed {seed}, strategy `{strategy}`).",
+        f"(seed {seed}, strategy `{strategy}`)."
+        + (
+            ""
+            if a.order is None
+            else " The runs were done in that order."
+            if a.order.share == 1
+            else f" The runs followed that order for {a.order.share:.0%} of run pairs."
+        ),
         "",
     ]
 
@@ -570,6 +577,44 @@ def _label_results(a: Analysis) -> list[str]:
         ]
         out += [f"- *{m.metric}*: {m.explanation}" for m in o.metrics]
         out.append("")
+    return out + confounder_lines(a)
+
+
+def confounder_lines(a: Analysis) -> list[str]:
+    """Flagged confounder values per condition, and the sensitivity check (Markdown)."""
+    out: list[str] = []
+    flags = a.confounder_flags
+    if not flags.empty and int(flags["n_flagged"].sum()):
+        conds = [c.id for c in a.definition.conditions]
+        rows = []
+        for conf_id, group in flags.groupby("confounder_id", sort=False):
+            by_cond = {r.condition_id: f"{r.n_flagged}/{r.n_runs}" for r in group.itertuples()}
+            rows.append([conf_id, *(by_cond.get(c, "—") for c in conds)])
+        out += [
+            "**Confounders by condition** — runs with a value other than the recommended one:",
+            "",
+            md_table(["Confounder", *conds], rows),
+            "",
+        ]
+    check = a.sensitivity
+    if check is not None:
+        reasons = ", ".join(f"{k} ({n})" for k, n in check.reasons.items())
+        head = (
+            f"**Sensitivity check.** Leaving out the {check.left_out} run(s) with a flagged "
+            f"per-run value ({reasons}) "
+        )
+        if check.changes:
+            out += [
+                head + f"changes {len(check.changes)} of {check.n_assessments} assessments:",
+                "",
+                *(
+                    f"- {cond}, {metric}: {VERDICT_SHORT[before]} → {VERDICT_SHORT[after]}"
+                    for cond, metric, before, after in check.changes
+                ),
+                "",
+            ]
+        else:
+            out += [head + f"changes none of the {check.n_assessments} assessments.", ""]
     return out
 
 

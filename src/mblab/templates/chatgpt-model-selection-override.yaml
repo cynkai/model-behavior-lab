@@ -137,19 +137,29 @@ randomization:
   strategy: blocked_by_repetition
 
 # Recorded for every run. Values outside allowed_values are rejected.
+# `per_run: true` marks what can change with every response; it is never pre-filled
+# from the previous run. Values outside `recommended` are flagged in every report, even
+# when all runs share them, and runs with such a per-run value are left out in a
+# sensitivity check of the per-message assessments.
 confounders:
   - id: memory
     question: Was ChatGPT memory (saved memories or chat-history reference) enabled?
     allowed_values: [enabled, disabled, unknown]
+    recommended: [disabled]
   - id: custom_instructions
     question: Were custom instructions or a personality preset active?
     allowed_values: [active, inactive, unknown]
+    recommended: [inactive]
   - id: tools_used
     question: Did the response visibly use a tool (web search, code, canvas, other)?
     allowed_values: [none, web_search, code, other, unknown]
+    per_run: true
+    recommended: [none]
   - id: switch_notice
     question: Did the client show a notice about a usage limit or a changed/unavailable model?
     allowed_values: [none, limit_notice, model_switch_notice, other, unknown]
+    per_run: true
+    recommended: [none]
   - id: network
     question: Network connection during the run.
     allowed_values: [wifi, cellular, unknown]

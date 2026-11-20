@@ -329,6 +329,20 @@ class Confounder(StrictModel):
     id: Identifier
     question: str = Field(min_length=1)
     allowed_values: list[str] = Field(min_length=2)
+    per_run: bool = Field(
+        default=False,
+        description=(
+            "True for an observation that can change with every response (a tool used, a "
+            "notice shown). It is never pre-filled from the previous run."
+        ),
+    )
+    recommended: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Values that keep the comparison clean (e.g. memory disabled). Any other value "
+            "is flagged in the results, even when every run has it."
+        ),
+    )
 
     @field_validator("allowed_values")
     @classmethod
@@ -336,6 +350,23 @@ class Confounder(StrictModel):
         if len(set(values)) != len(values):
             raise ValueError("allowed_values contains duplicates")
         return values
+
+    @model_validator(mode="after")
+    def _recommended_allowed(self) -> Confounder:
+        unknown = [v for v in self.recommended if v not in self.allowed_values]
+        if unknown:
+            raise ValueError(f"recommended values not in allowed_values: {', '.join(unknown)}")
+        return self
+
+    @model_serializer(mode="wrap")
+    def _serialize(self, handler: Any) -> dict[str, Any]:
+        # Unset options stay omitted, so older definitions keep their hash.
+        data = handler(self)
+        if not data.get("per_run"):
+            data.pop("per_run", None)
+        if not data.get("recommended"):
+            data.pop("recommended", None)
+        return data
 
 
 class ApiSettings(StrictModel):

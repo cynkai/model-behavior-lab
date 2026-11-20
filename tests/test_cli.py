@@ -6,6 +6,7 @@ import json
 import pytest
 from typer.testing import CliRunner
 
+from mblab import cli
 from mblab.cli import app
 from mblab.csvcells import FORMULA_STARTS
 from mblab.study import Study
@@ -252,3 +253,28 @@ def test_plan_force_is_refused_once_records_exist(planned):
     result = run("plan", "-s", planned, "--force", "--seed", "8")
     assert result.exit_code == 2 and "already recorded" in result.output
     assert (planned / "plan.json").read_bytes() == before
+
+
+def test_record_never_prefills_per_run_confounders(planned, monkeypatch):
+    assert (
+        run(
+            "record", "-s", planned, "--no-copy-prompt", input=_record_input("ANSWER: 265")
+        ).exit_code
+        == 0
+    )
+    asked: dict[str, str | None] = {}
+    real = cli._choose
+
+    def spy(question, choices, default):
+        asked[question] = default
+        return real(question, choices, default)
+
+    monkeypatch.setattr(cli, "_choose", spy)
+    second = run("record", "-s", planned, "--no-copy-prompt", input=_record_input("ANSWER: 1"))
+    assert second.exit_code == 0, second.output
+    definition = Study.load(planned).definition
+    for conf in definition.confounders:
+        if conf.per_run:
+            assert asked[conf.question] is None, conf.id  # tools, notices: always asked
+        else:
+            assert asked[conf.question] is not None, conf.id  # carried over from the last run

@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import timedelta
 
 import pytest
 import yaml
 
 from mblab.analysis import VERDICT_TEXT, AnalysisSettings, analyze, classify_label
 from mblab.plan import generate_plan
+from mblab.report import render_report
 from mblab.schema import ExperimentDefinition
 from mblab.study import Study, dump_json, save_plan, template_text
 
@@ -216,3 +218,62 @@ def test_distinct_answers_count_what_the_rule_read(study_dir, definition, plan):
     row = a.tasks.set_index(["condition_id", "task_id"]).loc[("A", "T1")]
     assert (row.n_scored, row.n_format_failures) == (3, 1)
     assert row.distinct_answers == 1 and row.majority_answer_share == 1.0
+
+
+def test_flagged_confounders_and_the_sensitivity_check(study_dir, definition, plan):
+    # Memory on in every run (constant, still flagged), and a usage-limit notice in every
+    # run of C, whose responses then look like the default selection's.
+    records = []
+    for run in plan.runs:
+        task = definition.task(run.task_id)
+        notice = run.condition_id == "C" and run.repetition == 1
+        right = run.condition_id in {"B", "C"} and not notice
+        records.append(
+            make_record(
+                definition,
+                plan,
+                run.run_id,
+                response_text=f"ANSWER: {task.reference_answer if right else '0'}",
+                confounders={
+                    "memory": "enabled",
+                    "custom_instructions": "inactive",
+                    "tools_used": "none",
+                    "switch_notice": "limit_notice" if notice else "none",
+                    "network": "wifi",
+                },
+            )
+        )
+    write_records(study_dir, records)
+    a = analyze(Study.load(study_dir))
+    texts = [lim.text for lim in a.limitations]
+    assert any(
+        "Confounder 'memory' had a value other than the recommended (disabled) in 72 of 72" in t
+        for t in texts
+    )
+    assert any("'switch_notice'" in t and "C 6/18" in t and "A 0/18" in t for t in texts)
+    check = a.sensitivity
+    assert (
+        check is not None
+        and check.left_out == 6
+        and check.reasons == {"switch_notice=limit_notice": 6}
+    )
+    changes = {(c, m): (b, x) for c, m, b, x in check.changes}
+    assert changes[("C", "accuracy")][1] == "consistent_with_per_message"
+    assert changes[("C", "accuracy")][0] != "consistent_with_per_message"
+
+
+def test_order_adherence_is_reported(study_dir, definition, plan):
+    runs = sorted(plan.runs, key=lambda r: r.sequence)[:6]
+    stamps = [FIXED_NOW + timedelta(minutes=m) for m in (6, 5, 4, 3, 2, 1)]  # reversed
+    write_records(
+        study_dir,
+        [
+            make_record(definition, plan, r.run_id, timestamp=t)
+            for r, t in zip(runs, stamps, strict=True)
+        ],
+    )
+    a = analyze(Study.load(study_dir))
+    assert a.order is not None and a.order.share == 0 and a.order.pairs == 15
+    assert any("planned random order for 0% of run pairs" in lim.text for lim in a.limitations)
+    text = render_report(a, Study.load(study_dir), now=FIXED_NOW)
+    assert "The runs followed that order for 0% of run pairs." in text

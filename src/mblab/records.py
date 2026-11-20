@@ -32,20 +32,31 @@ def parse_thinking_seconds(text: str | None) -> float | None:
     return total if found else None
 
 
-def plan_fields(run: PlannedRun, plan: RunPlan | None) -> dict[str, Any]:
+#: Fields that say which planned run a record belongs to. A record must agree with its
+#: plan entry on all of them, or it describes a different run (another study, a pilot).
+PLAN_IDENTITY_FIELDS = (
+    "experiment_id",
+    "platform",
+    "execution_method",
+    "condition_id",
+    "model_selection",
+    "message_override",
+    "task_id",
+    "repetition",
+)
+
+
+def identity_conflicts(record: RunRecord, run: PlannedRun) -> list[str]:
+    """The identity fields in which ``record`` differs from its plan entry."""
+    return [name for name in PLAN_IDENTITY_FIELDS if getattr(record, name) != getattr(run, name)]
+
+
+def plan_fields(run: PlannedRun) -> dict[str, Any]:
     """Fields a record copies from its plan entry."""
     return {
         "run_id": run.run_id,
-        "experiment_id": run.experiment_id,
         "experiment_version": run.experiment_version,
-        "definition_sha256": plan.definition_sha256 if plan else None,
-        "platform": run.platform,
-        "condition_id": run.condition_id,
-        "model_selection": run.model_selection,
-        "message_override": run.message_override,
-        "task_id": run.task_id,
-        "repetition": run.repetition,
-        "execution_method": run.execution_method,
+        **{name: getattr(run, name) for name in PLAN_IDENTITY_FIELDS},
     }
 
 
@@ -55,8 +66,14 @@ def build_record(
     plan: RunPlan | None,
     **observed: Any,
 ) -> RunRecord:
-    """Combine a plan entry with observed fields and validate the result."""
-    fields = plan_fields(run, plan)
+    """Combine a plan entry with observed fields and validate the result.
+
+    ``definition_sha256`` is the hash of ``definition``, the experiment.yaml in force
+    when the run was recorded, so a change made after planning shows in each record
+    collected under it (validation compares it with the hash in plan.json).
+    """
+    fields = plan_fields(run)
+    fields["definition_sha256"] = definition.sha256()
     fields["prompt_text"] = definition.task(run.task_id).prompt
     fields["recorded_at"] = datetime.now().astimezone()
     fields.update(observed)

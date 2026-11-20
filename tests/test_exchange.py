@@ -221,3 +221,34 @@ def test_template_keeps_formulas_out_and_imports_them_back(tmp_path):
     assert result.errors == []
     (record,) = result.records
     assert record.prompt_text == formula and not record.excluded  # no deviation needed
+
+
+def test_template_names_the_experiment_and_import_checks_it(study_dir):
+    study, _, rows = _template_rows(study_dir)
+    assert rows[0]["experiment_id"] == study.definition.experiment_id
+    study, path = _one_filled_row(study_dir, experiment_id="another-study")
+    result = import_file(study, path)
+    assert result.records == [] and "experiment_id is 'another-study'" in result.errors[0]
+
+
+def test_json_import_refuses_records_that_do_not_fit_the_plan(
+    study_dir, definition, plan, tmp_path
+):
+    good = make_record(definition, plan, "A:T1:r1")
+    other_study = make_record(definition, plan, "A:T2:r1").model_copy(
+        update={"experiment_id": "another-study"}
+    )
+    relabelled = make_record(definition, plan, "A:T3:r1").model_copy(update={"condition_id": "B"})
+    unplanned = good.model_copy(update={"run_id": "Z:T1:r1"})
+    path = tmp_path / "in.jsonl"
+    path.write_text(
+        "".join(r.model_dump_json() + "\n" for r in [good, other_study, relabelled, unplanned]),
+        encoding="utf-8",
+    )
+    result = import_file(Study.load(study_dir), path)
+    assert [r.run_id for r in result.records] == ["A:T1:r1"]
+    messages = " | ".join(result.errors)
+    assert "item 2: run A:T2:r1: experiment_id is 'another-study'" in messages
+    assert "another study or a pilot" in messages
+    assert "item 3: run A:T3:r1: condition_id is 'B' but the plan says 'A'" in messages
+    assert "item 4: run Z:T1:r1: not in this study's plan" in messages

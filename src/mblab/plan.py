@@ -9,10 +9,23 @@ from typing import Any
 from mblab import __version__
 from mblab.schema import ExperimentDefinition, PlannedRun, RunPlan
 
+#: Prefix of every run id in a pilot study's plan, so a pilot record or a filled-in
+#: pilot CSV can never be taken for a run of the main study.
+PILOT_RUN_PREFIX = "pilot:"
+
 
 def make_run_id(condition_id: str, task_id: str, repetition: int) -> str:
     # ':' cannot appear in identifiers, so run ids are unambiguous.
     return f"{condition_id}:{task_id}:r{repetition}"
+
+
+def planned_prompt(plan: RunPlan, task_id: str) -> str | None:
+    """The prompt of ``task_id`` as pre-registered in plan.json's definition snapshot."""
+    for task in plan.definition_snapshot.get("tasks", []):
+        if isinstance(task, dict) and task.get("id") == task_id:
+            prompt = task.get("prompt")
+            return prompt if isinstance(prompt, str) else None
+    return None
 
 
 def seeded_shuffle(items: list[Any], rng: random.Random) -> None:
@@ -50,12 +63,13 @@ def generate_plan(
         seeded_shuffle(everything, rng)
         ordered = everything
 
+    prefix = PILOT_RUN_PREFIX if definition.pilot else ""
     runs = []
     for sequence, (cond_id, task_id, rep, block) in enumerate(ordered, start=1):
         cond = definition.condition(cond_id)
         runs.append(
             PlannedRun(
-                run_id=make_run_id(cond_id, task_id, rep),
+                run_id=prefix + make_run_id(cond_id, task_id, rep),
                 sequence=sequence,
                 block=block,
                 experiment_id=definition.experiment_id,

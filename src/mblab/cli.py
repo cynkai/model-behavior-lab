@@ -81,8 +81,9 @@ app = typer.Typer(
     # local can hold the API key. Keep them out on every supported Typer version.
     pretty_exceptions_show_locals=False,
 )
-console = Console(highlight=False, soft_wrap=True)
-err_console = Console(stderr=True, highlight=False, soft_wrap=True)
+# emoji=False: run ids such as "pilot:B:T6:r1" contain ":B:", which Rich would print as 🅱.
+console = Console(highlight=False, soft_wrap=True, emoji=False)
+err_console = Console(stderr=True, highlight=False, soft_wrap=True, emoji=False)
 
 F = TypeVar("F", bound=Callable[..., Any])
 
@@ -311,23 +312,25 @@ def plan(
     """Generate the randomized run order (plan.json) from experiment.yaml."""
     definition = load_definition(study / DEFINITION_FILE)
     plan_path = study / PLAN_FILE
-    existing = load_plan(plan_path)
-    records, _ = read_jsonl(study / RECORDS_FILE, RunRecord)
-    if existing is not None and not force:
-        raise StudyError(
-            f"{plan_path} already exists. Regenerating can change the run order; "
-            "use --force only if that is intended."
-        )
     new_plan = generate_plan(definition, seed=seed)
-    if existing is not None and records:
-        old_order = [r.run_id for r in existing.runs]
-        new_order = [r.run_id for r in new_plan.runs]
-        if old_order != new_order:
-            err_console.print(
-                f"[yellow]warning:[/] {len(records)} record(s) exist and the run order changed. "
-                "Recorded runs keep their run ids; report this as a protocol deviation."
-            )
     with write_lock(study, "plan"):
+        # Read inside the lock, so a record saved a moment ago counts.
+        existing = load_plan(plan_path)
+        if existing is not None and not force:
+            raise StudyError(
+                f"{plan_path} already exists. Regenerating can change the run order; "
+                "use --force only if that is intended."
+            )
+        records, unreadable = read_jsonl(study / RECORDS_FILE, RunRecord)
+        if existing is not None and (records or unreadable):
+            raise StudyError(
+                f"{len(records) + len(unreadable)} run(s) are already recorded under "
+                f"{plan_path}, so it is not replaced: it holds the pre-registered order and "
+                "the definition snapshot those records are checked against. Keep it; "
+                "`mblab validate` and the report show what changed in experiment.yaml since. "
+                "To change the design, start a new study directory (and a new "
+                "experiment_version)."
+            )
         save_plan(new_plan, plan_path)
     console.print(
         f"Wrote {plan_path}: {len(new_plan.runs)} runs = {len(definition.conditions)} conditions "
@@ -751,7 +754,7 @@ def import_(
     result = import_file(s, file, parse_timezone(default_tz))
     if result.errors:
         for err in result.errors:
-            err_console.print(f"[red]{err}[/]")
+            err_console.print(f"[red]{escape(err)}[/]")  # errors quote file values
         raise StudyError(f"{len(result.errors)} invalid row(s); nothing was imported")
     merged = merge_records(s, result.records, replace=replace, dry_run=dry_run)
     if merged.conflicts:
@@ -1061,7 +1064,7 @@ def grade_import(
         result = import_blind_sheet(s, sheet, key or sheet.with_name("blind-key.json"), grader)
         if result.errors:
             for err in result.errors:
-                err_console.print(f"[red]{err}[/]")
+                err_console.print(f"[red]{escape(err)}[/]")  # errors quote file values
             raise StudyError(f"{len(result.errors)} invalid row(s); no grades were imported")
         if result.grades:
             append_jsonl(s.grades_path, result.grades)
@@ -1095,6 +1098,11 @@ def report(
         console.print(f"[bold red]{DEMO_BANNER}[/]")
     if a.definition.pilot:
         console.print(f"[bold yellow]{PILOT_BANNER}[/]")
+    if a.validation.errors:
+        err_console.print(
+            f"[yellow]warning:[/] {len(a.validation.errors)} validation error(s); the report "
+            "says so at the top. Details: mblab validate"
+        )
     if not a.has_data:
         console.print("No observations yet: the report contains the design but no results.")
 

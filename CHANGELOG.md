@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+### Bad data kept out of the analysis
+
+- Imports refuse records that do not belong to the plan: a run that is not planned, or
+  one whose experiment, condition, selections, task, or repetition differ from its plan
+  entry (JSON and JSON lines were not checked before). The CSV template names the
+  `experiment_id`, and a row for another experiment is refused.
+- Analysis leaves out records it cannot match to the plan, including every copy of a run
+  recorded more than once (before, the record's own condition was trusted and the first
+  copy was used), and the limitations say how many. Reports open with a banner while
+  `mblab validate` finds errors.
+- Pilot studies use run ids that start with `pilot:` and the main seed + 1, so a pilot
+  record or a filled-in pilot CSV is refused by the main study and the pilot does not
+  rehearse the main order. A 64-character `experiment_id` keeps its `-pilot` suffix.
+- `mblab plan --force` refuses to replace `plan.json` once a run is recorded: the plan
+  holds the pre-registered order and snapshot that records are checked against.
+- Each record stores the hash of the `experiment.yaml` in force when it was recorded
+  (before, the plan's hash), validation and reports list what changed since planning and
+  how many records were collected under a changed definition, and prompts are compared
+  with the pre-registered prompt in the plan's snapshot.
+- `official_api` studies take no hand-entered data: `mblab template` and CSV import are
+  refused, and imported JSON records must carry the values the API returned. A CSV row
+  that gives a time without a method is recorded as a manual stopwatch time.
+
 ### Security
 
 - The API key can no longer appear in error output. Tracebacks never show local

@@ -16,22 +16,13 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Literal
 
-from mblab.plan import diff_snapshots
+from mblab.plan import diff_snapshots, planned_prompt
 from mblab.privacy import scan_text
+from mblab.records import identity_conflicts
 from mblab.schema import RunRecord
 from mblab.study import Study
 
 Severity = Literal["error", "warning", "info"]
-_PLAN_FIELDS = (
-    "experiment_id",
-    "platform",
-    "execution_method",
-    "condition_id",
-    "model_selection",
-    "message_override",
-    "task_id",
-    "repetition",
-)
 _MAX_LISTED = 8
 
 
@@ -73,6 +64,32 @@ class ValidationReport:
 def _listed(items: list[str]) -> str:
     shown = ", ".join(items[:_MAX_LISTED])
     return shown + (f", … (+{len(items) - _MAX_LISTED} more)" if len(items) > _MAX_LISTED else "")
+
+
+def changed_since_planning(study: Study, records: list[RunRecord]) -> str:
+    """What differed in experiment.yaml for ``records``, as far as it can be known.
+
+    plan.json keeps a snapshot of the definition it was made from, so the change up to
+    the current experiment.yaml can be listed. An intermediate edit is not stored.
+    """
+    plan = study.plan
+    if plan is None:
+        return ""
+    current = study.definition.sha256()
+    parts = []
+    if any(r.definition_sha256 == current for r in records):
+        changes = diff_snapshots(plan.definition_snapshot, study.definition.model_dump(mode="json"))
+        parts.append(
+            "Changed between plan.json and the current experiment.yaml: "
+            f"{_listed(changes) if changes else 'content'}."
+        )
+    earlier = [r for r in records if r.definition_sha256 != current]
+    if earlier:
+        parts.append(
+            f"{len(earlier)} of them were recorded under an earlier edit that is no longer "
+            "stored, so what differed for those is unknown."
+        )
+    return " ".join(parts)
 
 
 def _squash(text: str) -> str:
@@ -148,7 +165,8 @@ def validate_study(study: Study, now: datetime | None = None) -> ValidationRepor
             report.add(
                 "error",
                 "duplicate_record",
-                f"{count} records for run {run_id}; keep exactly one (use `mblab import --replace`).",
+                f"{count} records for run {run_id}; keep exactly one (use `mblab import --replace`). "
+                "Analysis leaves out every copy until then.",
                 run_id,
             )
 
@@ -159,18 +177,23 @@ def validate_study(study: Study, now: datetime | None = None) -> ValidationRepor
     for rec in study.records:
         run = planned.get(rec.run_id)
         if run is None:
-            report.add("error", "unknown_run", f"Run {rec.run_id} is not in the plan.", rec.run_id)
+            report.add(
+                "error",
+                "unknown_run",
+                f"Run {rec.run_id} is not in the plan (a record from another study or a pilot?). "
+                "Analysis leaves it out.",
+                rec.run_id,
+            )
             continue
-        for name in _PLAN_FIELDS:
-            if getattr(rec, name) != getattr(run, name):
-                report.add(
-                    "error",
-                    "condition_mismatch",
-                    f"Run {rec.run_id}: {name} is {getattr(rec, name)!r} but the plan says "
-                    f"{getattr(run, name)!r}. If the run deviated, set protocol_deviation "
-                    "instead of editing the condition.",
-                    rec.run_id,
-                )
+        for name in identity_conflicts(rec, run):
+            report.add(
+                "error",
+                "condition_mismatch",
+                f"Run {rec.run_id}: {name} is {getattr(rec, name)!r} but the plan says "
+                f"{getattr(run, name)!r}. If the run deviated, set protocol_deviation "
+                "instead of editing the condition. Analysis leaves this record out.",
+                rec.run_id,
+            )
         if rec.experiment_version != definition.experiment_version:
             report.add(
                 "warning",
@@ -180,15 +203,18 @@ def validate_study(study: Study, now: datetime | None = None) -> ValidationRepor
                 rec.run_id,
             )
         if rec.definition_sha256 and rec.definition_sha256 != plan.definition_sha256:
-            hash_mismatch.append(rec.run_id)
+            hash_mismatch.append(rec)
 
-        if rec.task_id in task_ids:
-            expected_prompt = definition.task(rec.task_id).prompt
-            if rec.prompt_text != expected_prompt:
-                if _squash(rec.prompt_text) == _squash(expected_prompt):
-                    whitespace_only.append(rec.run_id)
-                else:
-                    prompt_mismatch.append(rec.run_id)
+        # The pre-registered prompt is the one in plan.json's snapshot; an edit of
+        # experiment.yaml after planning must not move the baseline.
+        expected_prompt = planned_prompt(plan, rec.task_id) or (
+            definition.task(rec.task_id).prompt if rec.task_id in task_ids else None
+        )
+        if expected_prompt is not None and rec.prompt_text != expected_prompt:
+            if _squash(rec.prompt_text) == _squash(expected_prompt):
+                whitespace_only.append(rec.run_id)
+            else:
+                prompt_mismatch.append(rec.run_id)
 
         if not rec.new_conversation:
             report.add(
@@ -263,8 +289,9 @@ def validate_study(study: Study, now: datetime | None = None) -> ValidationRepor
         report.add(
             "warning",
             "hash_mismatch",
-            f"{len(hash_mismatch)} record(s) were collected under a different definition hash: "
-            f"{_listed(hash_mismatch)}.",
+            f"{len(hash_mismatch)} record(s) were collected under an experiment.yaml that "
+            f"differs from the one in plan.json: {_listed([r.run_id for r in hash_mismatch])}. "
+            + changed_since_planning(study, hash_mismatch),
         )
     if prompt_mismatch:
         report.add(

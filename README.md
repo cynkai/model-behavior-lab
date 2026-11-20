@@ -184,6 +184,15 @@ Everything is a local file. There is no database and no server-side component.
 - **Damaged lines are never deleted.** A line that cannot be read stays exactly as it
   was, a rewrite keeps the previous file as `records.jsonl.bak`, and `mblab validate`
   reports the line so you can fix it.
+- **Records must fit the plan.** Imports refuse a record whose run is not planned or
+  whose experiment, condition, selections, task, or repetition differ from the plan, so
+  pilot records (run ids `pilot:…`) or another study's file cannot slip in. Analysis
+  leaves out any such record already in the study and every copy of a run recorded
+  twice, says how many in the limitations, and the report opens with a banner while
+  validation finds errors. `official_api` studies take no hand-entered rows.
+- **The plan stays once data exists.** After the first record, `mblab plan --force`
+  refuses to replace `plan.json`. Each record keeps the hash of the `experiment.yaml` it
+  was collected under, and reports list what changed since planning.
 - **Spreadsheets.** CSV files written by mblab (entry template, blind grading sheet,
   results export) are UTF-8 with a byte-order mark, so spreadsheet apps read them
   correctly. Save them back as "CSV UTF-8". On import, a `prompt_text` that differs from

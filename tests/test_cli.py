@@ -240,3 +240,15 @@ def test_analyze_without_records_shows_no_numbers(planned):
 def test_grade_export_without_manual_tasks(planned):
     result = run("grade", "export", "-s", planned)
     assert result.exit_code == 2 and "method: manual" in result.output
+
+
+def test_plan_force_is_refused_once_records_exist(planned):
+    assert run("plan", "-s", planned, "--force", "--seed", "7").exit_code == 0  # no records yet
+    before = (planned / "plan.json").read_bytes()
+    study = Study.load(planned)
+    plan = study.require_plan()
+    first = min(plan.runs, key=lambda r: r.sequence)
+    write_records(planned, [make_record(study.definition, plan, first.run_id)])
+    result = run("plan", "-s", planned, "--force", "--seed", "8")
+    assert result.exit_code == 2 and "already recorded" in result.output
+    assert (planned / "plan.json").read_bytes() == before

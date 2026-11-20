@@ -15,7 +15,7 @@ from mblab.formatting import md_text
 from mblab.report import md_table, render_report
 from mblab.study import Study
 
-from .conftest import make_record, write_records
+from .conftest import FIXED_NOW, make_record, write_records
 from .test_analysis import BANNED
 
 NOW = datetime(2026, 11, 19, 12, 0, tzinfo=UTC)
@@ -120,3 +120,22 @@ def test_readme_mentions_only_implemented_commands(readme):
     for command in sorted(commands):
         result = runner.invoke(app, [*command.split(), "--help"])
         assert result.exit_code == 0, f"{readme}: `mblab {command}` is not a command"
+
+
+def test_records_that_contradict_the_plan_are_left_out_and_flagged(study_dir, definition, plan):
+    good = make_record(definition, plan, "A:T1:r1")
+    twice = make_record(definition, plan, "B:T1:r1")
+    relabelled = make_record(definition, plan, "C:T1:r1").model_copy(update={"condition_id": "A"})
+    write_records(study_dir, [good, twice, twice, relabelled])
+    study = Study.load(study_dir)
+    a = analyze(study)
+    assert list(a.results["run_id"]) == ["A:T1:r1"]  # neither copy of B, nor the relabelled C
+    assert a.left_out == {
+        "several records for one run": ["B:T1:r1", "B:T1:r1"],
+        "identity differs from the plan": ["C:T1:r1"],
+    }
+    text = render_report(a, study, now=FIXED_NOW)
+    header = text.split("\n## ")[0]
+    assert "VALIDATION ERRORS" in header
+    assert "3 record(s) are left out of every number" in text
+    assert not BANNED.search(text)

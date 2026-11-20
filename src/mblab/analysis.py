@@ -14,6 +14,8 @@ from typing import Any, Literal
 
 import pandas as pd
 
+from mblab.plan import diff_snapshots
+from mblab.records import identity_conflicts
 from mblab.schema import ExperimentDefinition, RunPlan
 from mblab.scoring import score_record
 from mblab.stats import (
@@ -130,6 +132,10 @@ class Analysis:
     limitations: list[Limitation] = field(default_factory=list)
     claims: list[Claim] = field(default_factory=list)
     primary_latency_method: str | None = None
+    #: Run ids of records left out of every number, by reason (see ``unplaced_records``).
+    left_out: dict[str, list[str]] = field(default_factory=dict)
+    #: Records collected under an experiment.yaml whose hash differs from plan.json's.
+    n_records_changed_definition: int = 0
 
     @property
     def included(self) -> pd.DataFrame:
@@ -293,6 +299,33 @@ def _api_columns(rec: Any) -> dict[str, Any]:
     }
 
 
+def unplaced_records(study: Study) -> dict[str, list[str]]:
+    """Records analysis cannot place, by reason, as run ids in file order.
+
+    A record is left out of every number if its run is not planned (or its task is no
+    longer defined), if it disagrees with its plan entry on the experiment, condition,
+    selections, task, or repetition (a record from another study or a pilot, or an
+    edited condition), or if the run has more than one record (no copy is preferred
+    over another). `mblab validate` reports each of these as an error.
+    """
+    plan_runs = study.plan.by_run_id() if study.plan else {}
+    task_ids = {t.id for t in study.definition.tasks}
+    copies = Counter(r.run_id for r in study.records)
+    out: dict[str, list[str]] = {}
+    for rec in study.records:
+        run = plan_runs.get(rec.run_id)
+        if run is None or rec.task_id not in task_ids:
+            reason = "run not planned or task not defined"
+        elif copies[rec.run_id] > 1:
+            reason = "several records for one run"
+        elif identity_conflicts(rec, run):
+            reason = "identity differs from the plan"
+        else:
+            continue
+        out.setdefault(reason, []).append(rec.run_id)
+    return out
+
+
 def build_results(study: Study) -> pd.DataFrame:
     definition = study.definition
     plan_runs = study.plan.by_run_id() if study.plan else {}
@@ -303,13 +336,11 @@ def build_results(study: Study) -> pd.DataFrame:
     confounder_ids = [c.id for c in definition.confounders]
     is_api = definition.execution_method == "official_api"
 
-    seen: set[str] = set()
+    left_out = {run_id for ids in unplaced_records(study).values() for run_id in ids}
     rows = []
     for rec in study.records:
-        # Skip records analysis cannot place; `mblab validate` reports them as errors.
-        if rec.run_id in seen or rec.run_id not in plan_runs or rec.task_id not in tasks:
+        if rec.run_id in left_out:  # see unplaced_records; validation reports them
             continue
-        seen.add(rec.run_id)
         run = plan_runs[rec.run_id]
         task = tasks[rec.task_id]
         result = score_record(task, rec, grades_by_run.get(rec.run_id, []))
@@ -1154,6 +1185,16 @@ def build_limitations(analysis: Analysis) -> list[Limitation]:
                     "cover recorded runs only.",
                 )
             )
+    if analysis.left_out:  # before the early return: it matters most when nothing is left
+        reasons = "; ".join(f"{reason}: {len(ids)}" for reason, ids in analysis.left_out.items())
+        total = sum(len(ids) for ids in analysis.left_out.values())
+        out.append(
+            Limitation(
+                "data",
+                f"{total} record(s) are left out of every number because they cannot be "
+                f"matched to the plan ({reasons}). `mblab validate` lists them.",
+            )
+        )
     if res.empty:
         return out
     excluded = int(res["excluded"].sum())
@@ -1189,16 +1230,30 @@ def build_limitations(analysis: Analysis) -> list[Limitation]:
                 + ".",
             )
         )
-    plan_hash = analysis.plan.definition_sha256 if analysis.plan else None
+    plan = analysis.plan
     current = d.sha256()
-    if plan_hash and plan_hash != current:
-        out.append(
-            Limitation(
-                "data",
-                "experiment.yaml changed after the plan was generated. Check `mblab validate` for "
-                "what changed; scoring rules edited after seeing data would be a post-hoc change.",
+    if plan is not None and (
+        plan.definition_sha256 != current or analysis.n_records_changed_definition
+    ):
+        parts = []
+        if plan.definition_sha256 != current:
+            changes = diff_snapshots(plan.definition_snapshot, d.model_dump(mode="json"))
+            shown = ", ".join(changes[:8]) + (
+                f", and {len(changes) - 8} more" if len(changes) > 8 else ""
             )
+            parts.append(
+                f"experiment.yaml changed after the plan was generated (changed: {shown or 'content'})."
+            )
+        if analysis.n_records_changed_definition:
+            parts.append(
+                f"{analysis.n_records_changed_definition} record(s) were collected under an "
+                "experiment.yaml that differs from the planned one."
+            )
+        parts.append(
+            "Every run is scored with the current experiment.yaml; scoring rules edited after "
+            "seeing data would be a post-hoc change."
         )
+        out.append(Limitation("data", " ".join(parts)))
     for conf in d.confounders:
         col = f"conf_{conf.id}"
         values = Counter(inc[col].dropna())
@@ -1417,6 +1472,12 @@ def analyze(study: Study, settings: AnalysisSettings | None = None) -> Analysis:
         api=summarize_api(definition, results),
         validation=validate_study(study),
         primary_latency_method=primary,
+        left_out=unplaced_records(study),
+        n_records_changed_definition=sum(
+            1
+            for r in study.records
+            if study.plan and r.definition_sha256 not in (None, study.plan.definition_sha256)
+        ),
     )
     analysis.limitations = build_limitations(analysis)
     analysis.claims = build_claims(analysis)

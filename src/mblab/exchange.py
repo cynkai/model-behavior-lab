@@ -2,6 +2,11 @@
 
 The CSV template has one row per planned run, so results can be typed into a
 spreadsheet and imported later. Rows that were not filled in are skipped.
+
+Every imported record must belong to this study's plan: its run id must be planned
+and its identity (experiment, condition, selections, task, repetition) must match the
+plan entry. Records of an ``official_api`` study come only from ``mblab run-api``, so
+those studies take no CSV entry and only JSON records that carry the API's values.
 """
 
 from __future__ import annotations
@@ -19,8 +24,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from pydantic import ValidationError
 
 from mblab.csvcells import from_row, to_cell
-from mblab.records import build_record
-from mblab.schema import RunRecord
+from mblab.records import build_record, identity_conflicts
+from mblab.schema import PlannedRun, RunRecord
 from mblab.study import (
     RECORDS_FILE,
     Study,
@@ -34,6 +39,7 @@ from mblab.study import (
 
 PLAN_COLUMNS = [
     "run_id",
+    "experiment_id",
     "sequence",
     "condition_id",
     "model_selection",
@@ -67,7 +73,16 @@ def template_columns(study: Study) -> list[str]:
     return [*PLAN_COLUMNS, "prompt_text", *ENTRY_COLUMNS, *confounders, *TRAILING_COLUMNS]
 
 
+def _refuse_manual_entry(study: Study) -> None:
+    if study.definition.execution_method == "official_api":
+        raise StudyError(
+            "this is an official_api study: its records are written by `mblab run-api` with "
+            "the values the API returned, so there is nothing to enter by hand"
+        )
+
+
 def write_template_csv(study: Study, path: Path) -> int:
+    _refuse_manual_entry(study)
     plan = study.require_plan()
     columns = template_columns(study)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -81,6 +96,7 @@ def write_template_csv(study: Study, path: Path) -> int:
             row = {col: "" for col in columns}
             row.update(
                 run_id=run.run_id,
+                experiment_id=run.experiment_id,
                 sequence=run.sequence,
                 condition_id=run.condition_id,
                 model_selection=run.model_selection,
@@ -214,9 +230,7 @@ def row_to_record(row: dict[str, str], study: Study, default_tz: tzinfo | None) 
     if not _blank(row.get("latency_method")):
         data["latency_method"] = row["latency_method"].strip()
     elif "latency_seconds" in data:
-        data["latency_method"] = (
-            "manual_stopwatch" if run.execution_method == "manual_ui" else "client_timer"
-        )
+        data["latency_method"] = "manual_stopwatch"  # a CSV row is typed in by hand
     if not _blank(row.get("latency_confidence")):
         data["latency_confidence"] = row["latency_confidence"].strip()
     if not _blank(row.get("thinking_indicator")):
@@ -253,6 +267,7 @@ def import_file(study: Study, path: Path, default_tz: tzinfo | None = None) -> I
     result = ImportResult()
     suffix = path.suffix.lower()
     if suffix == ".csv":
+        _refuse_manual_entry(study)
         for number, row in enumerate(read_csv_rows(path), start=2):
             try:
                 record = row_to_record(row, study, default_tz)
@@ -291,14 +306,40 @@ def import_file(study: Study, path: Path, default_tz: tzinfo | None = None) -> I
                         items.append((number, json.loads(line)))
                     except json.JSONDecodeError as exc:
                         result.errors.append(f"line {number}: not valid JSON: {exc}")
+        planned = study.require_plan().by_run_id()
+        is_api = study.definition.execution_method == "official_api"
         for number, item in items:
             try:
-                result.records.append(RunRecord.model_validate(item))
+                record = RunRecord.model_validate(item)
             except ValidationError as exc:
                 result.errors.append(f"item {number}: {format_validation_error(exc)}")
+                continue
+            problem = _plan_problem(record, planned.get(record.run_id), is_api)
+            if problem:
+                result.errors.append(f"item {number}: run {record.run_id}: {problem}")
+            else:
+                result.records.append(record)
         return result
 
     raise StudyError(f"unsupported file type {path.suffix!r} (use .csv, .json, or .jsonl)")
+
+
+def _plan_problem(record: RunRecord, run: PlannedRun | None, is_api: bool) -> str | None:
+    """Why ``record`` cannot be imported into this study, or None."""
+    if run is None:
+        return "not in this study's plan (a record from another study or a pilot?)"
+    conflicts = identity_conflicts(record, run)
+    if conflicts:
+        name = conflicts[0]
+        return f"{name} is {getattr(record, name)!r} but the plan says {getattr(run, name)!r}" + (
+            " (a record from another study or a pilot?)" if name == "experiment_id" else ""
+        )
+    if is_api and record.api_reported is None:
+        return (
+            "no values reported by the API; records of an official_api study come from "
+            "`mblab run-api`"
+        )
+    return None
 
 
 @dataclass

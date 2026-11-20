@@ -311,23 +311,25 @@ def plan(
     """Generate the randomized run order (plan.json) from experiment.yaml."""
     definition = load_definition(study / DEFINITION_FILE)
     plan_path = study / PLAN_FILE
-    existing = load_plan(plan_path)
-    records, _ = read_jsonl(study / RECORDS_FILE, RunRecord)
-    if existing is not None and not force:
-        raise StudyError(
-            f"{plan_path} already exists. Regenerating can change the run order; "
-            "use --force only if that is intended."
-        )
     new_plan = generate_plan(definition, seed=seed)
-    if existing is not None and records:
-        old_order = [r.run_id for r in existing.runs]
-        new_order = [r.run_id for r in new_plan.runs]
-        if old_order != new_order:
-            err_console.print(
-                f"[yellow]warning:[/] {len(records)} record(s) exist and the run order changed. "
-                "Recorded runs keep their run ids; report this as a protocol deviation."
-            )
     with write_lock(study, "plan"):
+        # Read inside the lock, so a record saved a moment ago counts.
+        existing = load_plan(plan_path)
+        if existing is not None and not force:
+            raise StudyError(
+                f"{plan_path} already exists. Regenerating can change the run order; "
+                "use --force only if that is intended."
+            )
+        records, unreadable = read_jsonl(study / RECORDS_FILE, RunRecord)
+        if existing is not None and (records or unreadable):
+            raise StudyError(
+                f"{len(records) + len(unreadable)} run(s) are already recorded under "
+                f"{plan_path}, so it is not replaced: it holds the pre-registered order and "
+                "the definition snapshot those records are checked against. Keep it; "
+                "`mblab validate` and the report show what changed in experiment.yaml since. "
+                "To change the design, start a new study directory (and a new "
+                "experiment_version)."
+            )
         save_plan(new_plan, plan_path)
     console.print(
         f"Wrote {plan_path}: {len(new_plan.runs)} runs = {len(definition.conditions)} conditions "
@@ -1095,6 +1097,11 @@ def report(
         console.print(f"[bold red]{DEMO_BANNER}[/]")
     if a.definition.pilot:
         console.print(f"[bold yellow]{PILOT_BANNER}[/]")
+    if a.validation.errors:
+        err_console.print(
+            f"[yellow]warning:[/] {len(a.validation.errors)} validation error(s); the report "
+            "says so at the top. Details: mblab validate"
+        )
     if not a.has_data:
         console.print("No observations yet: the report contains the design but no results.")
 

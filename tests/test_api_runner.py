@@ -22,6 +22,7 @@ from typer.testing import CliRunner
 from mblab import api_runner
 from mblab.analysis import analyze
 from mblab.cli import app
+from mblab.exchange import import_file, write_template_csv
 from mblab.plan import generate_plan
 from mblab.report import render_report
 from mblab.schema import ApiReported, ExperimentDefinition
@@ -770,3 +771,25 @@ def test_token_totals_include_excluded_runs(api_study, fake):
     write_jsonl(study.records_path, [first, *study.records[1:]])
     a = analyze(Study.load(api_study))
     assert int(a.api["input_tokens_sum"].fillna(0).sum()) == 200
+
+
+def test_api_studies_take_no_manual_entry(api_study, fake, tmp_path):
+    study = Study.load(api_study)
+    with pytest.raises(StudyError, match="nothing to enter by hand"):
+        write_template_csv(study, tmp_path / "t.csv")
+    rows = tmp_path / "rows.csv"
+    rows.write_text("run_id,timestamp,latency_seconds\n", encoding="utf-8")
+    with pytest.raises(StudyError, match="nothing to enter by hand"):
+        import_file(study, rows)
+
+    _send(api_study, fake, limit=1)
+    (sent,) = Study.load(api_study).records
+    from_api = tmp_path / "from-api.jsonl"
+    from_api.write_text(sent.model_dump_json() + "\n", encoding="utf-8")
+    assert [r.run_id for r in import_file(study, from_api).records] == [sent.run_id]
+    typed = tmp_path / "typed.jsonl"
+    typed.write_text(
+        sent.model_copy(update={"api_reported": None}).model_dump_json() + "\n", encoding="utf-8"
+    )
+    result = import_file(study, typed)
+    assert result.records == [] and "come from `mblab run-api`" in result.errors[0]

@@ -65,18 +65,28 @@ basis. Generated text follows fixed wording rules:
 - The experiment definition (`experiment.yaml`) holds the conditions, tasks, the exact
   prompts, scoring rules, reference answers, label aliases, confounders, and hypotheses.
 - `mblab plan` stores the SHA-256 of the *parsed* definition (comments and formatting do
-  not count) and a full snapshot in `plan.json`. Each record carries the hash it was
-  collected under.
+  not count) and a full snapshot in `plan.json`. Each record carries the hash of the
+  `experiment.yaml` in force when it was recorded, so a record collected after an edit
+  shows it. Once a run is recorded, `mblab plan --force` refuses to replace `plan.json`:
+  the plan holds the pre-registered order and snapshot that records are checked against.
 - `mblab validate` diffs the current definition against the snapshot and names every
-  changed path (for example `tasks[T5].scoring.expected`). Reports flag a definition
-  that changed after data collection began as a possible post-hoc change.
+  changed path (for example `tasks[T5].scoring.expected`), and lists the records
+  collected under a changed definition. Prompts are compared with the prompt in the
+  snapshot, not with the current file. Reports name the changed paths among the
+  limitations as a possible post-hoc change; every run is scored with the current file.
+- Records must belong to the plan. Imports refuse a record whose run is not planned or
+  whose experiment, condition, selections, task, or repetition differ from its plan
+  entry, and analysis leaves out any such record already in `records.jsonl`, as well as
+  every copy of a run recorded more than once. Reports open with a banner while
+  `mblab validate` finds errors.
 - A definition is rejected unless every automatically scored task has a reference answer
   that passes its own scoring rule.
 - Label aliases (`observed_label_aliases`) are fixed in advance, so deciding which
   displayed text "counts as Pro" cannot be done after seeing the data. They are chosen
   from a **pilot study** (`mblab pilot`): a separate directory with its own
-  `experiment_id` and `pilot: true`, whose records are labelled PILOT everywhere and are
-  rejected by validation if copied into the main study. `mblab labels` lists the texts
+  `experiment_id`, `pilot: true`, run ids that start with `pilot:`, and the main seed + 1
+  (so it does not rehearse the main order). Its records are labelled PILOT everywhere and
+  cannot be imported into the main study. `mblab labels` lists the texts
   the pilot displayed, verbatim; on a non-pilot study it warns that changing aliases now
   would be post-hoc.
 

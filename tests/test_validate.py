@@ -4,6 +4,7 @@ from datetime import timedelta
 
 import yaml
 
+from mblab.analysis import analyze
 from mblab.schema import ManualGrade, RunRecord
 from mblab.study import Study, template_text
 from mblab.validate import validate_study
@@ -176,3 +177,45 @@ def test_unreadable_lines_and_grade_checks(study_dir, definition, plan):
 def test_record_copy_validation_still_applies(definition, plan):
     rec = make_record(definition, plan, "A:T1:r1")
     assert RunRecord.model_validate_json(rec.model_dump_json()).run_id == "A:T1:r1"
+
+
+def _edit_definition(root, change):
+    data = yaml.safe_load(template_text())
+    change(data)
+    (root / "experiment.yaml").write_text(yaml.safe_dump(data), encoding="utf-8")
+    return Study.load(root).definition
+
+
+def test_records_carry_the_definition_they_were_collected_under(study_dir, definition, plan):
+    before = make_record(definition, plan, "A:T5:r1")  # recorded under the planned YAML
+
+    def change(data):
+        data["tasks"][4]["scoring"]["expected"] = 634
+        data["tasks"][4]["reference_answer"] = "634"
+
+    edited = _edit_definition(study_dir, change)
+    after = make_record(edited, plan, "B:T5:r1")  # recorded after the edit
+    assert before.definition_sha256 == plan.definition_sha256
+    assert after.definition_sha256 == edited.sha256() != plan.definition_sha256
+    write_records(study_dir, [before, after])
+    (issue,) = [i for i in _validate(study_dir).issues if i.code == "hash_mismatch"]
+    assert "B:T5:r1" in issue.message and "A:T5:r1" not in issue.message
+    assert "tasks[T5].scoring.expected" in issue.message
+    (lim,) = [
+        lim
+        for lim in analyze(Study.load(study_dir)).limitations
+        if "after the plan was generated" in lim.text
+    ]
+    assert "tasks[T5].scoring.expected" in lim.text
+    assert "1 record(s) were collected under an experiment.yaml" in lim.text
+    assert "scored with the current experiment.yaml" in lim.text
+
+
+def test_prompts_are_compared_with_the_planned_prompt(study_dir, plan):
+    def change(data):
+        data["tasks"][0]["prompt"] = data["tasks"][0]["prompt"].replace("train", "bus")
+
+    edited = _edit_definition(study_dir, change)
+    # Sent with the edited prompt: it matches the current YAML, not the pre-registered one.
+    write_records(study_dir, [make_record(edited, plan, "A:T1:r1")])
+    assert "prompt_mismatch" in _codes(_validate(study_dir), "warning")

@@ -46,7 +46,8 @@ separates the two:
 1. After editing `platform` and the labels you can see in the picker:
    `mblab pilot -s my-study`. This creates `my-study-pilot/` — a copy of the definition
    with `experiment_id` `…-pilot`, `pilot: true`, one repetition (24 runs), and its own
-   plan. Use `--repetitions` for more.
+   plan: run ids start with `pilot:` and the seed is the main seed + 1, so the pilot's
+   order is not the main study's. Use `--repetitions` for more.
 2. Run it exactly as in §2–§3 (`mblab next -s my-study-pilot --copy`, `mblab record …`).
    It is also a rehearsal: timing, copying responses, finding the app version.
 3. `mblab labels -s my-study-pilot` lists every label the app displayed, verbatim, with
@@ -58,8 +59,9 @@ separates the two:
 5. Continue with step 4 of §1 and plan the main study.
 
 Pilot records are real observations but never part of the results: reports and the
-dashboard label them PILOT, and `mblab validate` rejects them if they are copied into the
-main study (their `experiment_id` does not match its plan). Keep the pilot directory: it
+dashboard label them PILOT, and the main study refuses to import them or a filled-in
+pilot CSV (their run ids are not in its plan); `mblab validate` reports any that are
+copied in by hand, and analysis leaves them out. Keep the pilot directory: it
 documents how the labels and aliases were chosen. Do not reuse the same responses in
 the main study — run its plan from the start.
 

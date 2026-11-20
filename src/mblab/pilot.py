@@ -6,9 +6,11 @@ so ``observed_label_aliases`` can be filled in *before* the main study collects
 data. Deciding aliases from the main study's own data would be a post-hoc change.
 
 The pilot is its own study directory with its own ``experiment_id`` (suffix
-``-pilot``) and ``pilot: true``. Its records are real observations, but they are
-never part of the experiment's results: validation rejects them in the main study
-because their ``experiment_id`` does not match the plan.
+``-pilot``) and ``pilot: true``. Its run ids start with ``pilot:`` and its seed is the
+main seed + 1, so its order differs from the main study's. Its records are real
+observations, but they are never part of the experiment's results: importing them
+(or a filled-in pilot CSV) into the main study is refused, because their run ids are
+not in the main plan.
 """
 
 from __future__ import annotations
@@ -54,7 +56,17 @@ def create_pilot_study(
         raise StudyError(f"{target} is not empty; choose a new directory or pass --force")
 
     data = yaml.safe_load((main / DEFINITION_FILE).read_text(encoding="utf-8"))
-    data["experiment_id"] = f"{definition.experiment_id}{PILOT_SUFFIX}"[:64]
+    # Shorten the id, never the suffix: a 64-character id would otherwise lose
+    # "-pilot" and the pilot would carry the main study's id.
+    pilot_id = definition.experiment_id[: 64 - len(PILOT_SUFFIX)] + PILOT_SUFFIX
+    if pilot_id == definition.experiment_id:
+        raise StudyError(f"cannot derive a pilot experiment_id distinct from {pilot_id!r}")
+    data["experiment_id"] = pilot_id
+    # A different seed, so rehearsing the pilot does not rehearse the main study's order.
+    data["randomization"] = {
+        **(data.get("randomization") or {}),
+        "seed": definition.randomization.seed + 1,
+    }
     data["title"] = f"[PILOT] {definition.title}"
     data["repetitions"] = repetitions
     data["pilot"] = True

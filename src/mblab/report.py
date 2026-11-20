@@ -115,6 +115,13 @@ def _header(a: Analysis, study: Study, now: datetime) -> list[str]:
         out += [f"> **{DEMO_BANNER}**", ""]
     if d.pilot:
         out += [f"> **{PILOT_BANNER}**", ""]
+    if a.validation.errors:
+        out += [
+            f"> **VALIDATION ERRORS ({len(a.validation.errors)}).** Records that cannot be "
+            "matched to the plan are left out of every number below. Fix the errors listed in "
+            "Appendix B (`mblab validate`) before relying on or sharing this report.",
+            "",
+        ]
     out += [
         md_table(
             ["Item", "Value"],

@@ -49,7 +49,7 @@ def manual_study(tmp_path):
 
 
 def _fill(sheet, points_by_row, grader="g1"):
-    with sheet.open(encoding="utf-8", newline="") as handle:
+    with sheet.open(encoding="utf-8-sig", newline="") as handle:
         rows = list(csv.DictReader(handle))
     for row, points in zip(rows, points_by_row, strict=False):
         row["points"] = points
@@ -65,12 +65,13 @@ def test_blind_sheet_hides_condition_information(manual_study):
     study = Study.load(manual_study)
     sheet, key, n = export_blind_sheet(study)
     assert n == 6
-    text = sheet.read_text(encoding="utf-8")
+    assert sheet.read_bytes().startswith(b"\xef\xbb\xbf")  # BOM: spreadsheets read it as UTF-8
+    text = sheet.read_text(encoding="utf-8-sig")
     header = text.splitlines()[0].split(",")
     assert header == SHEET_COLUMNS
     for leaked in ("condition", "run_id", "model_selection", "observed_model_label", "latency"):
         assert leaked not in header
-    with sheet.open(encoding="utf-8", newline="") as handle:
+    with sheet.open(encoding="utf-8-sig", newline="") as handle:
         rows = list(csv.DictReader(handle))
     assert [r["grading_id"] for r in rows] == [f"G{i:03d}" for i in range(1, 7)]
     entries = json.loads(key.read_text())["entries"]

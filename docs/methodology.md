@@ -178,6 +178,12 @@ observed records in one study; definition changes after collection; order deviat
 identical long responses in different runs (copy-paste mistakes); grade consistency; and
 possible personal data in free text (the matched value is never printed).
 
+Unreadable lines in `records.jsonl`, `grades.jsonl` or `api-unrecorded.jsonl` (bad JSON,
+bad UTF-8, wrong fields) are errors for that line only. Commands that rewrite a file keep
+such lines byte for byte, and keep the previous file as `.bak`, instead of dropping what
+they cannot parse. All writes happen under one study-wide lock, after reading the files
+again, so concurrent commands cannot lose or duplicate a run.
+
 ## 11. Threats to validity
 
 - **Construct:** a displayed label is not ground truth; accuracy and time are proxies
@@ -249,14 +255,19 @@ per-message decision table (§9) and no displayed-label analysis.
 **Cost.** Every request is billed to the key's account for input and output tokens,
 with reasoning tokens billed as output. Higher effort tends to use more tokens; a
 `max_output_tokens` cap bounds each request but responses that reach it are recorded as
-incomplete. A request that times out on the client may still be billed and is retried.
+incomplete. Rate limits, server errors, and failures to connect at all are retried. A
+read timeout or a dropped connection can come after the API accepted (and billed) the
+request, so such a run is not retried automatically: it is logged in
+`api-unrecorded.jsonl` and held back like a response that could not be recorded.
 The tool does not price anything — prices change — but reports list token totals per
 condition so cost can be computed from the provider's price list. Totals cover every recorded
 response, excluded runs included, because all of them were billed. A billed response
 that cannot be turned into a record (for example an unexpected status) is listed in
 `api-unrecorded.jsonl` with its id and token counts, reported as a limitation, and its
 run is held back from resending unless `--resend-unrecorded` is given. Ctrl+C waits
-until a received response is written, and only one `mblab run-api` may run per study.
+until a received response is written. Only one command writes to a study at a time,
+and `run-api` reads the study again under that lock, so a run recorded meanwhile is
+skipped instead of being sent (and billed) twice.
 
 **What it cannot show.** API-reported values are the provider's figures, recorded as
 returned, not independently verified. How the provider applies an effort setting

@@ -68,7 +68,10 @@ docs/            # methodology, protocol, Korean README
 5. **Tests for behaviour.** Scoring rules, statistics, and validation checks need tests
    with concrete inputs. Statistical routines should be checked against a reference
    implementation or published values.
-6. **Small, focused pull requests**, with a description of what changed and how you
+6. **Writes go through the storage helpers.** Take `write_lock`, read the file again
+   inside it, and add or replace records with `merge_records` / `append_jsonl`. Never
+   rewrite a JSON-lines file from a parsed copy: lines that do not parse must survive.
+7. **Small, focused pull requests**, with a description of what changed and how you
    checked it.
 
 ## Adding things

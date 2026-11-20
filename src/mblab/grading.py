@@ -13,6 +13,7 @@ at the condition. Reports say so.
 from __future__ import annotations
 
 import csv
+import io
 import json
 import random
 from dataclasses import dataclass, field
@@ -60,7 +61,8 @@ def export_blind_sheet(
     sheet = out_dir / "blind-sheet.csv"
     key = out_dir / "blind-key.json"
     entries: dict[str, str] = {}
-    with sheet.open("w", encoding="utf-8", newline="") as handle:
+    # UTF-8 with a byte-order mark, so graders' spreadsheet apps read the text correctly.
+    with sheet.open("w", encoding="utf-8-sig", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=SHEET_COLUMNS)
         writer.writeheader()
         for number, rec in enumerate(candidates, start=1):
@@ -121,7 +123,14 @@ def import_blind_sheet(
     records = {r.run_id: r for r in study.records}
     existing = {(g.run_id, g.grader_id) for g in study.grades}
     now = now or datetime.now().astimezone()
-    with sheet.open(encoding="utf-8-sig", newline="") as handle:
+    try:
+        sheet_text = sheet.read_text(encoding="utf-8-sig")
+    except UnicodeDecodeError as exc:
+        raise StudyError(
+            f"{sheet} is not UTF-8 text (byte {exc.start}). Save it from your spreadsheet as "
+            '"CSV UTF-8" and import it again'
+        ) from None
+    with io.StringIO(sheet_text, newline="") as handle:
         for number, row in enumerate(csv.DictReader(handle), start=2):
             gid = (row.get("grading_id") or "").strip()
             points_text = (row.get("points") or "").strip()

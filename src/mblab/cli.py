@@ -62,6 +62,7 @@ from mblab.study import (
     read_jsonl,
     save_plan,
     template_text,
+    write_lock,
 )
 from mblab.validate import ValidationReport, validate_study
 
@@ -142,6 +143,16 @@ def _show_run(study: Study, run: PlannedRun, total: int) -> str:
     console.print(task.prompt, markup=False)
     console.print("----- end of prompt -----", style="dim")
     return task.prompt
+
+
+def _warn_unreadable(s: Study) -> None:
+    bad = [e for e in s.load_errors if e.file == RECORDS_FILE]
+    if bad:
+        err_console.print(
+            f"[yellow]warning:[/] records.jsonl has {len(bad)} unreadable line(s) (line "
+            f"{', '.join(str(e.line) for e in bad)}). Saving keeps them as they are; fix or "
+            "remove them (`mblab validate` shows why)."
+        )
 
 
 def _latest(records: list[RunRecord]) -> RunRecord | None:
@@ -312,7 +323,8 @@ def plan(
                 f"[yellow]warning:[/] {len(records)} record(s) exist and the run order changed. "
                 "Recorded runs keep their run ids; report this as a protocol deviation."
             )
-    save_plan(new_plan, plan_path)
+    with write_lock(study, "plan"):
+        save_plan(new_plan, plan_path)
     console.print(
         f"Wrote {plan_path}: {len(new_plan.runs)} runs = {len(definition.conditions)} conditions "
         f"x {len(definition.tasks)} tasks x {definition.repetitions} repetitions "
@@ -425,6 +437,7 @@ def record(
             "not typed in"
         )
     plan_ = s.require_plan()
+    _warn_unreadable(s)
     if run_id:
         run = plan_.by_run_id().get(run_id)
         if run is None:
@@ -537,11 +550,18 @@ def record(
     if not yes and not typer.confirm("Save this record?", default=True):
         console.print("Not saved.")
         raise typer.Exit(1)
-    if rec.run_id in s.recorded_run_ids():
-        merge_records(s, [rec], replace=True, dry_run=False)
-    else:
-        append_jsonl(s.records_path, [rec])
+    merged = merge_records(s, [rec], replace=replace, dry_run=False)
+    if merged.conflicts:
+        unsaved = s.root / "exports" / f"unsaved-{rec.run_id.replace(':', '_')}.jsonl"
+        unsaved.parent.mkdir(parents=True, exist_ok=True)
+        unsaved.write_text(rec.model_dump_json() + "\n", encoding="utf-8")
+        raise StudyError(
+            f"run {rec.run_id} was recorded by another command while you were typing, so "
+            f"nothing was saved. Your entry is in {unsaved}; to keep it instead, run "
+            f"`mblab import {unsaved} -s {study} --replace`"
+        )
     console.print(f"[green]Saved to {s.records_path}.[/]")
+    _warn_unreadable(s)
     nxt = next_pending(plan_, s.recorded_run_ids() | {rec.run_id})
     if nxt:
         console.print(f"Next: mblab next -s {study} --copy   (#{nxt.sequence} {nxt.run_id})")
@@ -673,6 +693,11 @@ def run_api(
         )
         raise typer.Exit(130) from None
     console.print(f"Recorded {len(result.recorded)} run(s) to {s.records_path}.")
+    if result.skipped:
+        console.print(
+            f"Skipped {len(result.skipped)} run(s) that another command recorded or held back "
+            "after this one started: " + ", ".join(r.run_id for r in result.skipped)
+        )
     _print_validation_summary(validate_study(Study.load(study)))
     if result.stopped_at is not None:
         raise StudyError(
@@ -736,6 +761,14 @@ def import_(
         f"{verb} {len(merged.added)} new and {len(merged.replaced)} replaced record(s); "
         f"skipped {result.skipped_blank} unfilled row(s)."
     )
+    if merged.unreadable_kept:
+        err_console.print(
+            f"[yellow]warning:[/] records.jsonl has {len(merged.unreadable_kept)} unreadable "
+            f"line(s) (line {', '.join(map(str, merged.unreadable_kept))}). They were kept as "
+            "they are; fix or remove them (`mblab validate` shows why)."
+        )
+    if merged.replaced and not dry_run:
+        console.print(f"The previous file was kept as {s.records_path}.bak.")
     if not dry_run:
         _print_validation_summary(validate_study(Study.load(study)))
 
@@ -966,7 +999,7 @@ def export(
     frame = a.results.copy()
     frame.insert(0, "synthetic_data", a.synthetic)
     if fmt == "csv":
-        frame.to_csv(target, index=False)
+        frame.to_csv(target, index=False, encoding="utf-8-sig")  # BOM: spreadsheets read UTF-8
     else:
         rows = frame.astype(object).where(frame.notna(), None).to_dict("records")
         target.write_text(dump_json(rows), encoding="utf-8")
@@ -1008,14 +1041,15 @@ def grade_import(
     ] = None,
 ) -> None:
     """Import points from a grading sheet into grades.jsonl."""
-    s = Study.load(study)
-    result = import_blind_sheet(s, sheet, key or sheet.with_name("blind-key.json"), grader)
-    if result.errors:
-        for err in result.errors:
-            err_console.print(f"[red]{err}[/]")
-        raise StudyError(f"{len(result.errors)} invalid row(s); no grades were imported")
-    if result.grades:
-        append_jsonl(s.grades_path, result.grades)
+    with write_lock(study, "grade import"):
+        s = Study.load(study)  # read inside the lock: duplicate checks see every saved grade
+        result = import_blind_sheet(s, sheet, key or sheet.with_name("blind-key.json"), grader)
+        if result.errors:
+            for err in result.errors:
+                err_console.print(f"[red]{err}[/]")
+            raise StudyError(f"{len(result.errors)} invalid row(s); no grades were imported")
+        if result.grades:
+            append_jsonl(s.grades_path, result.grades)
     console.print(
         f"Imported {len(result.grades)} grade(s); {result.skipped_blank} row(s) without points."
     )

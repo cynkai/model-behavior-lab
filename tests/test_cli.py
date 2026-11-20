@@ -136,7 +136,7 @@ def test_record_from_file_with_no_latency(planned, tmp_path):
 def test_template_import_validate_cycle(planned):
     assert run("template", "-s", planned).exit_code == 0
     path = planned / "exports" / "entry-template.csv"
-    with path.open(encoding="utf-8", newline="") as handle:
+    with path.open(encoding="utf-8-sig", newline="") as handle:
         rows = list(csv.DictReader(handle))
     rows[0].update(
         timestamp="2026-11-20T10:00:00", client_version="1.0", response_text="ANSWER: 265"
@@ -185,7 +185,7 @@ def test_demo_analyze_and_export(tmp_path):
     assert payload["synthetic_data"] is True
 
     assert run("export", "-s", root).exit_code == 0
-    with (root / "exports" / "results.csv").open(encoding="utf-8", newline="") as handle:
+    with (root / "exports" / "results.csv").open(encoding="utf-8-sig", newline="") as handle:
         rows = list(csv.DictReader(handle))
     assert len(rows) == 68 and rows[0]["synthetic_data"] == "True"
     assert run("export", "-s", root, "--format", "json").exit_code == 0

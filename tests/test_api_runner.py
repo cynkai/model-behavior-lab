@@ -65,6 +65,21 @@ class APIConnectionError(OpenAIError):
     pass
 
 
+# Stand-ins for the httpx errors the real SDK chains as ``__cause__``.
+class ConnectError(Exception):
+    pass
+
+
+class ReadTimeout(Exception):
+    pass
+
+
+def connection_error(cause: BaseException | None) -> APIConnectionError:
+    exc = APIConnectionError("connection problem")
+    exc.__cause__ = cause
+    return exc
+
+
 def make_response(
     text: str = "Working.\nANSWER: 265",
     *,
@@ -377,7 +392,8 @@ def test_rate_limit_spaces_request_starts(api_study, fake):
 
 
 def test_transient_errors_are_retried_and_noted(api_study, fake):
-    fake.client.script = [RateLimitError("slow down"), APIConnectionError("reset")]
+    # A failure to connect at all is retried: the request never reached the API.
+    fake.client.script = [RateLimitError("slow down"), connection_error(ConnectError())]
     waits: list[float] = []
     result = _send(api_study, fake, limit=1, min_interval=0, retry_wait=1.0, sleep=waits.append)
     assert result.stopped_at is None and len(fake.client.calls) == 3
@@ -621,15 +637,57 @@ def test_ctrl_c_waits_until_the_record_is_written(api_study, fake, monkeypatch):
 
 
 def test_second_sender_is_refused(api_study, fake):
-    with (
-        api_runner.study_lock(api_study),
-        pytest.raises(StudyError, match="another `mblab run-api`"),
-    ):
+    import os
+    import socket
+
+    # Another live process (here: our parent) holds the study's write lock.
+    lock = api_study / api_runner.LOCK_FILE
+    lock.write_text(
+        json.dumps({"pid": os.getppid(), "host": socket.gethostname(), "purpose": "run-api"})
+    )
+    with pytest.raises(StudyError, match="being written by `run-api`"):
         _send(api_study, fake, limit=1)
     assert fake.client.calls == []
-    assert not (api_study / api_runner.LOCK_FILE).exists()
-    _send(api_study, fake, limit=1)  # the lock is released afterwards
+    lock.unlink()
+    _send(api_study, fake, limit=1)
     assert len(fake.client.calls) == 1
+    assert not lock.exists()  # released afterwards
+
+
+def test_a_stale_copy_of_the_study_does_not_pay_twice(api_study, fake):
+    first, second = Study.load(api_study), Study.load(api_study)
+    runs = api_runner.pending_runs(first.require_plan(), set(), 2)
+    kwargs = {"client": fake.client, "sdk": fake.module, "sleep": lambda s: None}
+    api_runner.send_runs(first, runs, **kwargs)
+    result = api_runner.send_runs(second, runs, **kwargs)  # chose the same runs earlier
+    assert len(fake.client.calls) == 2
+    assert result.recorded == [] and result.skipped == runs
+    assert len(Study.load(api_study).records) == 2
+
+
+@pytest.mark.parametrize("cause", [ReadTimeout(), None], ids=["read-timeout", "unknown"])
+def test_possibly_billed_connection_errors_are_held_not_retried(api_study, fake, cause):
+    fake.client.script = [connection_error(cause)]
+    result = _send(api_study, fake, limit=1, retry_wait=0)
+    assert len(fake.client.calls) == 1  # no automatic retry
+    assert "may have reached the API" in result.stop_reason
+    (entry,) = api_runner.read_unrecorded(api_study)
+    assert entry["run_id"] == result.stopped_at.run_id and entry["response_id"] is None
+    assert entry["reason"].startswith("possibly billed")
+    study = Study.load(api_study)
+    assert api_runner.unrecorded_run_ids(api_study, study.recorded_run_ids()) == {entry["run_id"]}
+
+
+def test_a_damaged_unrecorded_log_stops_sending(api_study, fake):
+    (api_study / api_runner.UNRECORDED_FILE).write_text('{"run_id": "M:T3:r1"}\n{"run_id": "H:T')
+    with pytest.raises(StudyError, match="unreadable"):
+        _send(api_study, fake, limit=1)
+    assert fake.client.calls == []
+    report = validate_study(Study.load(api_study))
+    assert any(
+        i.code == "unreadable_line" and api_runner.UNRECORDED_FILE in i.message
+        for i in report.errors
+    )
 
 
 def test_refusal_is_kept_alongside_text(api_study, fake):

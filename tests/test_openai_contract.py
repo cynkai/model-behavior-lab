@@ -77,6 +77,27 @@ def test_sdk_exposes_the_exceptions_we_handle():
         assert issubclass(getattr(openai, name), openai.OpenAIError)
 
 
+def test_timeouts_are_connection_errors_with_an_httpx_cause():
+    """api_runner decides "possibly billed" from the class names of the transport error
+    the SDK chains as ``__cause__``; fail if those names change."""
+    import importlib
+
+    from mblab.api_runner import _NOT_SENT_ERRORS
+
+    transport = None
+    for name in ("httpx2", "httpx"):  # SDK 3.x ships httpx2; older SDKs use httpx
+        try:
+            transport = importlib.import_module(name)
+            break
+        except ImportError:
+            continue
+    assert transport is not None, "the OpenAI SDK's HTTP transport module was not found"
+    assert issubclass(openai.APITimeoutError, openai.APIConnectionError)
+    for name in (*_NOT_SENT_ERRORS, "ReadTimeout"):
+        assert isinstance(getattr(transport, name), type), name
+    assert issubclass(transport.ConnectTimeout, transport.TimeoutException)
+
+
 def test_a_parsed_sdk_response_maps_to_record_fields():
     fields = response_fields(Response.model_validate(PAYLOAD))
     assert fields["response_status"] == "incomplete"

@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
+from mblab.csvcells import from_row, to_cell
 from mblab.plan import seeded_shuffle
 from mblab.schema import ManualGrade, ManualScoring
 from mblab.study import GRADING_DIR, Study, StudyError, atomic_write_text
@@ -62,6 +63,8 @@ def export_blind_sheet(
     key = out_dir / "blind-key.json"
     entries: dict[str, str] = {}
     # UTF-8 with a byte-order mark, so graders' spreadsheet apps read the text correctly.
+    # Cells go through to_cell: a response such as "=HYPERLINK(...)" or "- item" is shown
+    # as text in the grader's spreadsheet instead of being run as a formula.
     with sheet.open("w", encoding="utf-8-sig", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=SHEET_COLUMNS)
         writer.writeheader()
@@ -71,21 +74,20 @@ def export_blind_sheet(
             task = manual[rec.task_id]
             rule = task.scoring
             assert isinstance(rule, ManualScoring)
-            writer.writerow(
-                {
-                    "grading_id": gid,
-                    "task_id": task.id,
-                    "task_title": task.title,
-                    "rubric": rule.rubric,
-                    "max_points": f"{rule.max_points:g}",
-                    "pass_threshold": f"{rule.pass_threshold:g}",
-                    "prompt_text": rec.prompt_text,
-                    "response_text": rec.response_text,
-                    "points": "",
-                    "grader_id": "",
-                    "notes": "",
-                }
-            )
+            row = {
+                "grading_id": gid,
+                "task_id": task.id,
+                "task_title": task.title,
+                "rubric": rule.rubric,
+                "max_points": f"{rule.max_points:g}",
+                "pass_threshold": f"{rule.pass_threshold:g}",
+                "prompt_text": rec.prompt_text,
+                "response_text": rec.response_text,
+                "points": "",
+                "grader_id": "",
+                "notes": "",
+            }
+            writer.writerow({col: to_cell(value) for col, value in row.items()})
     atomic_write_text(
         key,
         json.dumps(
@@ -131,7 +133,8 @@ def import_blind_sheet(
             '"CSV UTF-8" and import it again'
         ) from None
     with io.StringIO(sheet_text, newline="") as handle:
-        for number, row in enumerate(csv.DictReader(handle), start=2):
+        for number, raw in enumerate(csv.DictReader(handle), start=2):
+            row = from_row(raw)
             gid = (row.get("grading_id") or "").strip()
             points_text = (row.get("points") or "").strip()
             if not points_text:

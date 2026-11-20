@@ -7,6 +7,8 @@ Nothing here touches the network or needs a real key: ``fake_sdk`` is put in
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -483,8 +485,68 @@ def test_missing_key_and_missing_sdk(monkeypatch):
     with pytest.raises(StudyError, match="OPENAI_API_KEY"):
         api_runner.make_client(_fake_module(FakeClient()))
     monkeypatch.setitem(sys.modules, "openai", None)  # import fails
-    with pytest.raises(StudyError, match=r"model-behavior-lab\[api\]"):
+    with pytest.raises(StudyError, match=r'pip install -e "\.\[api\]"') as info:
         api_runner.load_sdk()
+    # Never a bare PyPI name: the project is not on PyPI, so anyone could publish one.
+    assert 'pip install "model-behavior-lab[api]"' not in str(info.value)
+    assert "@ git+https://github.com/cynkai/model-behavior-lab" in str(info.value)
+
+
+def test_client_creation_errors_are_one_line_without_the_key(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", FAKE_KEY)
+    module = _fake_module(FakeClient())
+
+    def broken(**kwargs):
+        raise ValueError(f"cannot read SSL_CERT_FILE for the client with key {kwargs['api_key']}")
+
+    module.OpenAI = broken
+    with pytest.raises(StudyError) as info:
+        api_runner.make_client(module)
+    message = str(info.value)
+    assert message.startswith("could not create the OpenAI client: ValueError")
+    assert FAKE_KEY not in message and "[redacted]" in message
+    assert info.value.__cause__ is None and info.value.__suppress_context__
+
+
+TRACEBACK_DRIVER = """
+import os
+import sys
+
+from mblab import api_runner, cli
+
+
+def make_client(sdk):
+    key = os.environ["OPENAI_API_KEY"]  # a local holding the key, as in the real one
+    raise RuntimeError("unexpected failure while creating the client")
+
+
+api_runner.load_sdk = lambda: object()
+api_runner.make_client = make_client
+if sys.argv[2] == "show-locals":  # control: proves the check can see a leaked key
+    cli.app.pretty_exceptions_show_locals = True
+cli.app(["run-api", "-s", sys.argv[1], "-y"], prog_name="mblab")
+"""
+
+
+@pytest.mark.parametrize("mode", ["as-shipped", "show-locals"])
+def test_tracebacks_do_not_print_the_key(api_study, tmp_path, mode):
+    # A real process, so Typer's own exception hook prints the traceback. Typer before
+    # 0.23 shows local variables by default; CI runs this at the lowest allowed Typer.
+    driver = tmp_path / "driver.py"
+    driver.write_text(TRACEBACK_DRIVER, encoding="utf-8")
+    env = {k: v for k, v in os.environ.items() if "TYPER" not in k and k != "OPENAI_BASE_URL"}
+    env.update(OPENAI_API_KEY=FAKE_KEY, COLUMNS="200", NO_COLOR="1", TERM="dumb")
+    done = subprocess.run(
+        [sys.executable, str(driver), str(api_study), mode],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    output = done.stdout + done.stderr
+    assert done.returncode != 0
+    assert "unexpected failure while creating the client" in output  # a traceback was shown
+    assert (FAKE_KEY in output) is (mode == "show-locals"), output
 
 
 # -- validation, analysis, report -----------------------------------------------------------------

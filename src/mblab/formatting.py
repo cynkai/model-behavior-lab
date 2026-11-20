@@ -3,8 +3,24 @@
 from __future__ import annotations
 
 import math
+import string
 
 from mblab.stats import Interval
+
+_MARKDOWN_ESCAPES = str.maketrans({c: "\\" + c for c in string.punctuation})
+
+
+def md_text(value: object) -> str:
+    """``value`` as literal text for a Markdown string (Streamlit text, labels, captions).
+
+    Study files and records can come from someone else. Rendered as Markdown, their text
+    could add links, images that load from a remote server, headings, or formatting.
+    Every ASCII punctuation character is backslash-escaped, which CommonMark always
+    reads as the literal character, and line breaks become spaces, so the text shows
+    exactly as written and cannot start a new block.
+    """
+    return " ".join(str(value).split()).translate(_MARKDOWN_ESCAPES)
+
 
 VERDICT_SHORT = {
     "insufficient_data": "insufficient data",

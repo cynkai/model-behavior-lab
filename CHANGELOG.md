@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+### Security
+
+- The API key can no longer appear in error output. Tracebacks never show local
+  variables (Typer before 0.23 did by default, and a local can hold the key), and a
+  failure to create the OpenAI client is a one-line error with the key removed.
+- CSV files written by mblab (entry template, blind grading sheet, results export) put an
+  apostrophe before text that a spreadsheet would run as a formula (starting with `=`,
+  `+`, `-`, `@`, a tab, or a carriage return); numbers are left alone. `mblab import` and
+  `mblab grade import` remove it again, so files round-trip unchanged.
+- The dashboard shows text from a study (definition, records, and messages quoting them)
+  literally instead of rendering it as Markdown, so it cannot add links or load remote
+  images. Prompts and responses were already shown literally.
+- Install hints no longer point at `pip install "model-behavior-lab[...]"`: the project
+  is not on PyPI, so that would install whatever package someone published under the
+  name. They now name the clone (`pip install -e ".[api]"`) or the GitHub URL, and the
+  README says to list every extra in `uv sync`, which removes the extras it is not given.
+
 ### Data integrity
 
 - Every command that writes to a study (`record`, `import`, the dashboard form,

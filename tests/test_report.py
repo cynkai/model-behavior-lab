@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import re
 from datetime import UTC, datetime
 from pathlib import Path
@@ -10,6 +11,7 @@ from typer.testing import CliRunner
 from mblab.analysis import analyze
 from mblab.cli import app
 from mblab.demo import create_demo_study
+from mblab.formatting import md_text
 from mblab.report import md_table, render_report
 from mblab.study import Study
 
@@ -81,6 +83,24 @@ def test_md_table_escapes_cells():
     table = md_table(["a", "b"], [["x|y", "line\nbreak"], [None, float("nan")]])
     assert "x\\|y" in table and "line break" in table
     assert table.splitlines()[-1] == "| — | — |"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "![pixel](https://example.invalid/p.png)",
+        "[open](https://example.invalid) and <https://example.invalid>",
+        "# Heading\n\n1. one\n2. two\n- item",
+        "*emphasis* __strong__ `code` ~~gone~~ $x^2$ | a | b |",
+        '<img src="https://example.invalid/p.png"> &amp; \\[not a link\\](x)',
+        "[ref]\n\n[ref]: https://example.invalid",
+    ],
+)
+def test_md_text_renders_as_the_literal_text(text):
+    markdown_it = pytest.importorskip("markdown_it")
+    rendered = markdown_it.MarkdownIt("commonmark").render(md_text(text)).strip()
+    literal = html.escape(" ".join(text.split()), quote=False).replace('"', "&quot;")
+    assert rendered == f"<p>{literal}</p>"
 
 
 def test_report_command_writes_file(study_dir):

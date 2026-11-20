@@ -7,6 +7,7 @@ import pytest
 import yaml
 
 from mblab.analysis import analyze
+from mblab.csvcells import FORMULA_STARTS
 from mblab.demo import create_demo_study
 from mblab.grading import SHEET_COLUMNS, export_blind_sheet, import_blind_sheet
 from mblab.plan import generate_plan
@@ -116,6 +117,27 @@ def test_grade_import_rejects_bad_rows(manual_study):
     assert "not a number" in messages
     assert "grader_id missing" in messages
     assert "unknown grading_id" in messages
+
+
+def test_blind_sheet_shows_formula_responses_as_text(manual_study):
+    study = Study.load(manual_study)
+    plan = study.require_plan()
+    texts = ['=HYPERLINK("https://example.invalid","Open")', "- step one\n- step two"]
+    records = [
+        make_record(study.definition, plan, rec.run_id, response_text=texts[i % 2])
+        for i, rec in enumerate(study.records)
+    ]
+    write_records(manual_study, records)
+    study = Study.load(manual_study)
+    sheet, key, n = export_blind_sheet(study)
+    with sheet.open(encoding="utf-8-sig", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    assert {r["response_text"] for r in rows} == {"'" + t for t in texts}
+    for row in rows:
+        assert not [v for v in row.values() if v and v[0] in FORMULA_STARTS], row
+    _fill(sheet, ["2"] * n)
+    result = import_blind_sheet(study, sheet, key)
+    assert result.errors == [] and len(result.grades) == n
 
 
 def test_grade_export_needs_manual_tasks(study_dir):

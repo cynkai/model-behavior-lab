@@ -20,9 +20,10 @@ from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
 
-from mblab import __version__, api_runner
+from mblab import __version__, api_runner, install_hint
 from mblab.analysis import LABEL_CLASSES, Analysis, AnalysisSettings, analyze
 from mblab.clipboard import copy_text, paste_text
+from mblab.csvcells import to_cell
 from mblab.demo import DEMO_BANNER, create_demo_study
 from mblab.exchange import import_file, merge_records, parse_timezone, write_template_csv
 from mblab.formatting import (
@@ -76,6 +77,9 @@ app = typer.Typer(
     no_args_is_help=True,
     add_completion=False,
     rich_markup_mode=None,
+    # Typer before 0.23 prints the local variables of every frame in a traceback, and a
+    # local can hold the API key. Keep them out on every supported Typer version.
+    pretty_exceptions_show_locals=False,
 )
 console = Console(highlight=False, soft_wrap=True)
 err_console = Console(stderr=True, highlight=False, soft_wrap=True)
@@ -999,6 +1003,13 @@ def export(
     frame = a.results.copy()
     frame.insert(0, "synthetic_data", a.synthetic)
     if fmt == "csv":
+        # Text that a spreadsheet would run as a formula gets a leading apostrophe.
+        text_columns = [
+            c
+            for c in frame.columns
+            if frame[c].dtype == object or pd.api.types.is_string_dtype(frame[c].dtype)
+        ]
+        frame[text_columns] = frame[text_columns].map(to_cell)
         frame.to_csv(target, index=False, encoding="utf-8-sig")  # BOM: spreadsheets read UTF-8
     else:
         rows = frame.astype(object).where(frame.notna(), None).to_dict("records")
@@ -1008,7 +1019,11 @@ def export(
         console.print(f"[bold red]{DEMO_BANNER}[/]")
 
 
-grade_app = typer.Typer(help="Blind manual grading for tasks scored by hand.", no_args_is_help=True)
+grade_app = typer.Typer(
+    help="Blind manual grading for tasks scored by hand.",
+    no_args_is_help=True,
+    pretty_exceptions_show_locals=False,
+)
 app.add_typer(grade_app, name="grade")
 
 
@@ -1102,9 +1117,7 @@ def dashboard(
     try:
         import streamlit  # noqa: F401
     except ImportError:
-        raise StudyError(
-            'the dashboard needs Streamlit: pip install "model-behavior-lab[dashboard]"'
-        ) from None
+        raise StudyError(install_hint("dashboard", "the dashboard needs Streamlit")) from None
     Study.load(study)  # fail early with a clear message
     app_path = Path(__file__).parent / "dashboard" / "app.py"
     cmd = [

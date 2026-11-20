@@ -285,9 +285,14 @@ Streamlit 사용 통계 전송은 끈 상태로 시작합니다. 화면 구성:
   가정하며 고정된 6개 문제에만 해당합니다.
 - **메시지별 선택 대 기본 선택.** 예를 들어 C(Instant + Pro)에서, 어떤 지표가 어느 선택이
   적용되었는지를 가리킬 수 있으려면 먼저 두 기준 조건(A와 B)이 그 지표에서 구별되어야
-  합니다. 구별되지 않으면 결과는 *references not distinguishable*입니다. 구별되면 결과는
-  *consistent with the per-message selection*, *consistent with the default*, *differs from
-  both*, *inconclusive* 중 하나이며, 결코 "증명됨"이 아닙니다.
+  합니다. 구별되지 않으면 결과는 *references not distinguishable*입니다. 구별되면 차이의
+  구간이 사전 등록한 동등성 마진(기본값: 두 기준 차이의 절반) 안에 들어올 때만
+  *consistent with the per-message selection* 또는 *consistent with the default*이고, 두
+  기준 모두와 다르면 *between the two references* 또는 *differs from both*, 그 밖에는
+  *inconclusive*이며, 결코 "증명됨"이 아닙니다. 0(기본 선택 기준)에서 1(메시지별 선택
+  기준) 사이의 위치 값이 조건이 어디쯤인지 보여 줍니다. 신뢰수준, 최소 표본 수, 마진은
+  `experiment.yaml`의 `analysis:`에 미리 고정하며, 명령줄에서 바꾸면 결과에 탐색적
+  분석이라고 표시됩니다.
 - **표현 규칙.** 보고서는 "~와 일치한다(consistent with)", "구별되지 않는다", "관측할 수
   없다"라고 씁니다. 생성된 문장에 "proves", "confirms" 같은 단어가 있으면 테스트가
   실패합니다.

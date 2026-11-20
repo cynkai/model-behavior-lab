@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import functools
 import os
 import subprocess
@@ -36,6 +37,7 @@ from mblab.formatting import (
     metric_value,
     pct,
     pct_ci,
+    position_text,
     seconds,
     tokens,
 )
@@ -122,6 +124,21 @@ def main(
 
 
 # -- helpers ---------------------------------------------------------------------
+
+
+def _settings(s: Study, **overrides: Any) -> AnalysisSettings:
+    """The pre-registered analysis settings, with any options given on the command line."""
+    settings = AnalysisSettings.preregistered(s.definition, s.plan)
+    given = {k: v for k, v in overrides.items() if v is not None}
+    settings = dataclasses.replace(settings, **given)
+    departures = settings.departures(s.definition)
+    if departures:
+        err_console.print(
+            "[yellow]warning:[/] not the pre-registered analysis ("
+            + "; ".join(departures)
+            + "). Results are labelled exploratory."
+        )
+    return settings
 
 
 def _print_validation_summary(report: ValidationReport) -> None:
@@ -900,6 +917,7 @@ def _print_overrides(a: Analysis) -> None:
             item.condition_id,
             f"default ref {item.default_ref}",
             f"per-message ref {item.override_ref}",
+            "position (0 = default, 1 = per-message)",
             "assessment",
         )
         for m in item.metrics:
@@ -908,6 +926,7 @@ def _print_overrides(a: Analysis) -> None:
                 metric_value(m.condition_value, m.unit),
                 metric_value(m.default_ref_value, m.unit),
                 metric_value(m.override_ref_value, m.unit),
+                "—" if item.stacked else position_text(m.position),
                 VERDICT_SHORT[m.verdict],
             )
         console.print(table)
@@ -945,13 +964,23 @@ def analyze_cmd(
     json_out: Annotated[
         Path | None, typer.Option("--json", help="Also write the full analysis as JSON.")
     ] = None,
-    min_n: Annotated[int, typer.Option(help="Minimum observations per group to compare.")] = 5,
-    confidence: Annotated[float, typer.Option(help="Confidence level for intervals.")] = 0.95,
+    min_n: Annotated[
+        int | None,
+        typer.Option(
+            min=5,
+            help="Minimum observations per group to compare (default: experiment.yaml).",
+        ),
+    ] = None,
+    confidence: Annotated[
+        float | None,
+        typer.Option(
+            min=0.8, max=0.995, help="Confidence level for intervals (default: experiment.yaml)."
+        ),
+    ] = None,
 ) -> None:
     """Score responses and summarise results per condition, with uncertainty."""
     s = Study.load(study)
-    seed = s.plan.seed if s.plan else 0
-    a = analyze(s, AnalysisSettings(confidence=confidence, min_n=min_n, seed=seed))
+    a = analyze(s, _settings(s, confidence=confidence, min_n=min_n))
     d = a.definition
     console.print(f"[bold]{d.title}[/] — {d.experiment_id} v{d.experiment_version}")
     if a.synthetic:
@@ -1083,13 +1112,23 @@ def report(
     out: Annotated[
         Path | None, typer.Option(help="Output path (default: <study>/reports/report.md).")
     ] = None,
-    min_n: Annotated[int, typer.Option(help="Minimum observations per group to compare.")] = 5,
-    confidence: Annotated[float, typer.Option(help="Confidence level for intervals.")] = 0.95,
+    min_n: Annotated[
+        int | None,
+        typer.Option(
+            min=5,
+            help="Minimum observations per group to compare (default: experiment.yaml).",
+        ),
+    ] = None,
+    confidence: Annotated[
+        float | None,
+        typer.Option(
+            min=0.8, max=0.995, help="Confidence level for intervals (default: experiment.yaml)."
+        ),
+    ] = None,
 ) -> None:
     """Write a Markdown report: question, hypotheses, method, results, limitations."""
     s = Study.load(study)
-    seed = s.plan.seed if s.plan else 0
-    a = analyze(s, AnalysisSettings(confidence=confidence, min_n=min_n, seed=seed))
+    a = analyze(s, _settings(s, confidence=confidence, min_n=min_n))
     target = out or study / "reports" / "report.md"
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(render_report(a, s), encoding="utf-8")

@@ -75,7 +75,7 @@ def test_demo_report_is_labelled_and_careful(tmp_path):
     assert text.startswith("# [SYNTHETIC DEMO]")
     assert text.count("SYNTHETIC DEMO DATA") >= 2  # top and bottom
     assert "only demonstrate the report format" in text
-    assert "A descriptive tally, not a test of H1." in text
+    assert "A descriptive tally, not a test of H1; the metrics are related" in text
     assert not BANNED.search(text)
 
 

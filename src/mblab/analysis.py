@@ -16,11 +16,12 @@ import pandas as pd
 
 from mblab.plan import diff_snapshots
 from mblab.records import identity_conflicts
-from mblab.schema import ExperimentDefinition, RunPlan
+from mblab.schema import AnalysisPlan, ExperimentDefinition, RunPlan
 from mblab.scoring import score_record
 from mblab.stats import (
     Interval,
     bootstrap_median_diff,
+    bootstrap_position,
     describe,
     newcombe_interval,
     wilson_interval,
@@ -69,6 +70,29 @@ class AnalysisSettings:
     min_n: int = 5
     bootstrap_resamples: int = 2000
     seed: int = 0
+    equivalence_fraction: float = 0.5
+
+    @classmethod
+    def preregistered(
+        cls, definition: ExperimentDefinition, plan: RunPlan | None
+    ) -> AnalysisSettings:
+        """The settings fixed in experiment.yaml (``analysis:``), or their defaults."""
+        pre = definition.analysis or AnalysisPlan()
+        return cls(
+            confidence=pre.confidence,
+            min_n=pre.min_n,
+            equivalence_fraction=pre.equivalence_fraction,
+            seed=plan.seed if plan else 0,
+        )
+
+    def departures(self, definition: ExperimentDefinition) -> list[str]:
+        """Settings that differ from the pre-registered ones ("name X instead of Y")."""
+        pre = definition.analysis or AnalysisPlan()
+        return [
+            f"{name} {getattr(self, name):g} instead of {getattr(pre, name):g}"
+            for name in ("confidence", "min_n", "equivalence_fraction")
+            if getattr(self, name) != getattr(pre, name)
+        ]
 
 
 @dataclass(frozen=True)
@@ -96,6 +120,8 @@ class MetricAssessment:
     vs_override: Interval | None
     verdict: str
     explanation: str
+    #: Where the condition lies between its references: 0 = default-only, 1 = per-message.
+    position: Interval | None = None
 
 
 @dataclass(frozen=True)
@@ -682,6 +708,12 @@ class _MetricData:
     def size(self) -> int:
         return self.n if self.kind == "proportion" else len(self.values)
 
+    def samples(self) -> list[float]:
+        """The observations: 1/0 outcomes for a proportion, the values for a median."""
+        if self.kind == "proportion":
+            return [1.0] * self.k + [0.0] * (self.n - self.k)
+        return list(self.values)
+
     @property
     def value(self) -> float | None:
         if self.kind == "proportion":
@@ -801,21 +833,32 @@ VERDICT_TEXT = {
         "in this sample, so it cannot indicate which selection was applied."
     ),
     "consistent_with_per_message": (
-        "{cond} differs from the default-only reference ({dref}) and is not distinguishable from "
-        "the per-message reference ({oref}). In this sample that pattern is consistent with the "
-        "per-message selection being applied. It does not identify the model that ran on the server."
+        "{cond} is within the pre-registered equivalence margin of the per-message reference "
+        "({oref}): the interval for their difference lies within ±{margin} of the gap between "
+        "the two references. In this sample that pattern is consistent with the per-message "
+        "selection being applied. It does not identify the model that ran on the server."
     ),
     "consistent_with_default": (
-        "{cond} differs from the per-message reference ({oref}) and is not distinguishable from "
-        "the default-only reference ({dref}). In this sample that pattern is consistent with the "
-        "default selection being applied. It does not identify the model that ran on the server."
+        "{cond} is within the pre-registered equivalence margin of the default-only reference "
+        "({dref}): the interval for their difference lies within ±{margin} of the gap between "
+        "the two references. In this sample that pattern is consistent with the default "
+        "selection being applied. It does not identify the model that ran on the server."
+    ),
+    "between_references": (
+        "{cond} differs from both reference conditions and lies between them, at {position} on "
+        "a scale where {dref} (default-only) is 0 and {oref} (per-message) is 1. Neither "
+        "selection alone fits this sample. One explanation is that the per-message selection "
+        "applied in some runs only; the experiment does not tell such explanations apart."
     ),
     "differs_from_both": (
-        "{cond} differs from both reference conditions. Neither simple explanation fits this "
-        "sample; look for confounders (notices, tools, client changes) before interpreting."
+        "{cond} differs from both reference conditions and lies beyond them, at {position} on a "
+        "scale where {dref} is 0 and {oref} is 1. Neither simple explanation fits this sample; "
+        "look for confounders (notices, tools, client changes) before interpreting."
     ),
     "inconclusive": (
-        "{cond} is not distinguishable from either reference condition at this sample size."
+        "{cond} cannot be placed at this sample size: the intervals are too wide to fall within "
+        "the equivalence margin of either reference, and it is not shown to differ from both. "
+        "Not distinguishable from a reference is not the same as consistent with it."
     ),
     "no_difference_detected": (
         "No difference was detected between {cond} (same setting chosen twice) and {dref} (chosen "
@@ -826,6 +869,34 @@ VERDICT_TEXT = {
         "The cause is not identified by this experiment."
     ),
 }
+
+
+def _within(iv: Interval | None, margin: float) -> bool:
+    return iv is not None and -margin < iv.low and iv.high < margin
+
+
+def override_verdict(
+    refs: Interval | None, vs_d: Interval | None, vs_o: Interval | None, fraction: float
+) -> str:
+    """The decision rule for a condition whose per-message selection differs from its default.
+
+    ``refs`` is per-message reference minus default-only reference; ``vs_d`` and ``vs_o``
+    are the condition minus each reference. "Consistent with" a reference needs the
+    interval for the difference to lie within ± ``fraction`` × the gap between the
+    references (an equivalence margin); an interval that only includes 0 is
+    "inconclusive", never "consistent". A condition shown to differ from both references
+    lies either between them or beyond them.
+    """
+    if refs is None or not refs.excludes_zero:
+        return "references_not_distinguishable"
+    margin = fraction * abs(refs.estimate)
+    if _within(vs_o, margin):
+        return "consistent_with_per_message"
+    if _within(vs_d, margin):
+        return "consistent_with_default"
+    if vs_d is not None and vs_o is not None and vs_d.excludes_zero and vs_o.excludes_zero:
+        return "between_references" if (vs_d.low > 0) != (vs_o.low > 0) else "differs_from_both"
+    return "inconclusive"
 
 
 def _find_reference(definition: ExperimentDefinition, option_id: str) -> str | None:
@@ -892,7 +963,14 @@ def assess_overrides(
             dc = _metric_data(results, cond.id, metric, latency_method)
             dd = _metric_data(results, dref, metric, latency_method)
             do = _metric_data(results, oref, metric, latency_method)
-            fmt = {"cond": cond.id, "dref": dref, "oref": oref, "min_n": settings.min_n}
+            fmt = {
+                "cond": cond.id,
+                "dref": dref,
+                "oref": oref,
+                "min_n": settings.min_n,
+                "margin": f"{settings.equivalence_fraction:.0%}",
+                "position": "an unknown point",
+            }
             if min(dc.size, dd.size, do.size) < settings.min_n:
                 metrics.append(
                     MetricAssessment(
@@ -933,16 +1011,20 @@ def assess_overrides(
                 continue
             refs = _diff(do, dd, settings)
             vs_o = _diff(dc, do, settings)
-            if refs is None or not refs.excludes_zero:
-                verdict = "references_not_distinguishable"
-            elif vs_d and vs_o and vs_d.excludes_zero and not vs_o.excludes_zero:
-                verdict = "consistent_with_per_message"
-            elif vs_d and vs_o and vs_o.excludes_zero and not vs_d.excludes_zero:
-                verdict = "consistent_with_default"
-            elif vs_d and vs_o and vs_d.excludes_zero and vs_o.excludes_zero:
-                verdict = "differs_from_both"
-            else:
-                verdict = "inconclusive"
+            verdict = override_verdict(refs, vs_d, vs_o, settings.equivalence_fraction)
+            position = None
+            if refs is not None and refs.excludes_zero:
+                position = bootstrap_position(
+                    dc.samples(),
+                    dd.samples(),
+                    do.samples(),
+                    statistic="mean" if dc.kind == "proportion" else "median",
+                    resamples=settings.bootstrap_resamples,
+                    confidence=settings.confidence,
+                    seed=settings.seed,
+                )
+                if position is not None:
+                    fmt["position"] = f"{position.estimate:.2f}"
             metrics.append(
                 MetricAssessment(
                     name,
@@ -955,17 +1037,30 @@ def assess_overrides(
                     vs_o,
                     verdict,
                     VERDICT_TEXT[verdict].format(**fmt),
+                    position,
                 )
             )
         out.append(OverrideAssessment(cond.id, dref, oref, stacked, counts, label_summary, metrics))
     return out
 
 
+#: The verdict that shows a predicted pattern. "no_difference" has none: not detecting a
+#: difference is not equivalence, and a same-setting-twice condition has no second
+#: reference to scale an equivalence margin.
 PATTERN_VERDICT = {
     "per_message": "consistent_with_per_message",
     "default": "consistent_with_default",
-    "no_difference": "no_difference_detected",
 }
+#: Verdicts that place a condition; the others (too little data, references that do not
+#: differ, intervals too wide) say nothing for or against a pattern.
+DECIDABLE_VERDICTS = frozenset(
+    {
+        "consistent_with_per_message",
+        "consistent_with_default",
+        "between_references",
+        "differs_from_both",
+    }
+)
 PATTERN_TEXT = {
     "per_message": "per-message selection",
     "default": "default selection",
@@ -989,16 +1084,25 @@ class HypothesisTally:
             f"{n} {VERDICT_SHORT[v]}" for v, n in sorted(self.counts.items(), key=lambda kv: -kv[1])
         )
         conds = ", ".join(self.conditions)
+        caveat = (
+            f"A descriptive tally, not a test of {self.hypothesis_id}; the metrics are related "
+            "(response time and thinking time, for example), so the assessments are not "
+            "independent."
+        )
         if self.predicted_pattern is None:
             return (
-                f"{self.hypothesis_id} (conditions {conds}): metric assessments — {parts}. "
-                f"A descriptive tally, not a test of {self.hypothesis_id}."
+                f"{self.hypothesis_id} (conditions {conds}): metric assessments — {parts}. {caveat}"
+            )
+        if self.matching is None:
+            return (
+                f"{self.hypothesis_id} predicts the {PATTERN_TEXT[self.predicted_pattern]} pattern "
+                f"for conditions {conds}. No assessment can show it: not detecting a difference "
+                f"is not equivalence (all assessments: {parts}). {caveat}"
             )
         return (
             f"{self.hypothesis_id} predicts the {PATTERN_TEXT[self.predicted_pattern]} pattern "
-            f"for conditions {conds}: {self.matching} of {self.usable} assessments with enough data "
-            f"show it (all assessments: {parts}). A descriptive tally, not a test of "
-            f"{self.hypothesis_id}."
+            f"for conditions {conds}: {self.matching} of {self.usable} assessments that place a "
+            f"condition show it (all assessments: {parts}). {caveat}"
         )
 
 
@@ -1013,10 +1117,9 @@ def hypothesis_tallies(analysis: Analysis) -> list[HypothesisTally]:
         counts = Counter(m.verdict for o in conds for m in o.metrics)
         if not counts:
             continue
-        usable = sum(n for v, n in counts.items() if v != "insufficient_data")
-        matching = (
-            counts.get(PATTERN_VERDICT[hyp.predicted_pattern], 0) if hyp.predicted_pattern else None
-        )
+        usable = sum(n for v, n in counts.items() if v in DECIDABLE_VERDICTS)
+        target = PATTERN_VERDICT.get(hyp.predicted_pattern or "")
+        matching = counts.get(target, 0) if target else None
         tallies.append(
             HypothesisTally(
                 hyp.id,
@@ -1185,6 +1288,16 @@ def build_limitations(analysis: Analysis) -> list[Limitation]:
                     "cover recorded runs only.",
                 )
             )
+    departures = analysis.settings.departures(d)
+    if departures:
+        out.append(
+            Limitation(
+                "data",
+                "The analysis settings differ from the ones pre-registered in experiment.yaml ("
+                + "; ".join(departures)
+                + "), so this is an exploratory analysis, not the pre-registered one.",
+            )
+        )
     if analysis.left_out:  # before the early return: it matters most when nothing is left
         reasons = "; ".join(f"{reason}: {len(ids)}" for reason, ids in analysis.left_out.items())
         total = sum(len(ids) for ids in analysis.left_out.values())
@@ -1440,8 +1553,7 @@ def build_claims(analysis: Analysis) -> list[Claim]:
 
 def analyze(study: Study, settings: AnalysisSettings | None = None) -> Analysis:
     if settings is None:
-        seed = study.plan.seed if study.plan else 0
-        settings = AnalysisSettings(seed=seed)
+        settings = AnalysisSettings.preregistered(study.definition, study.plan)
     definition = study.definition
     results = build_results(study)
     inc = results[~results["excluded"]] if not results.empty else results

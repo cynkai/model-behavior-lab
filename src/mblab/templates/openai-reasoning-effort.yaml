@@ -113,6 +113,18 @@ randomization:
 # tools are sent (each request is independent and stored with store=false).
 confounders: []
 
+# Pre-registered analysis settings. Fix them before collecting data, like the
+# scoring rules: `mblab analyze` and `mblab report` use them, and overriding one on
+# the command line labels the results exploratory.
+analysis:
+  confidence: 0.95          # confidence level of every interval (0.8 to 0.995)
+  min_n: 5                  # fewest observations per group for a comparison (at least 5)
+  # A per-message condition counts as consistent with a reference condition only if
+  # the interval for their difference lies within this fraction of the gap between
+  # the two references (0.5: closer to that reference than to the other one; 0.25
+  # is stricter and needs more runs). Up to 0.5.
+  equivalence_fraction: 0.5
+
 latency_protocol: >-
   `mblab run-api` times each request with a client-side monotonic timer, from
   just before the SDK call until the full response has arrived

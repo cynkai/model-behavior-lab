@@ -42,6 +42,7 @@ from mblab.formatting import (
     metric_value,
     pct,
     pct_ci,
+    position_text,
     seconds,
     tokens,
 )
@@ -517,6 +518,9 @@ def _ui_label_sections(a: Analysis, mode: str | None, conf: int) -> None:
                 f"vs per-message ref [{conf}% CI]": "—"
                 if o.stacked
                 else interval_text(m.vs_override, m.unit),
+                "position (0 = default, 1 = per-message)": "—"
+                if o.stacked
+                else position_text(m.position),
                 "assessment": VERDICT_SHORT[m.verdict],
             }
             for m in o.metrics
@@ -758,6 +762,9 @@ def page_methodology(study: Study, a: Analysis) -> None:
         f"- Differences of medians: percentile bootstrap, {s.bootstrap_resamples} resamples, "
         f"seed {s.seed}.\n"
         f"- Groups with fewer than {s.min_n} observations are not compared.\n"
+        f"- A condition counts as consistent with a reference only within ±"
+        f"{s.equivalence_fraction:.0%} of the gap between the two references (pre-registered "
+        "equivalence margin); an interval that only includes 0 is inconclusive.\n"
         "- Per-message vs. default: a metric can only indicate which selection applied if the two "
         "reference conditions differ on it. The decision table is in "
         f"[docs/methodology.md]({DOCS}/methodology.md)."

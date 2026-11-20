@@ -158,3 +158,24 @@ def test_filled_pilot_csv_is_refused_by_the_main_study(study_dir):
     result = import_file(Study.load(study_dir), path)
     assert result.records == [] and len(result.errors) == 3
     assert all("is not in the plan" in e for e in result.errors)
+
+
+def test_cli_prints_pilot_run_ids_and_file_values_literally(study_dir):
+    pilot, root = _pilot(study_dir)
+    path = root / "exports" / "entry-template.csv"
+    write_template_csv(pilot, path)
+    with path.open(encoding="utf-8-sig", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    b_row = next(r for r in rows if r["condition_id"] == "B")  # "pilot:B:..." holds ":B:"
+    b_row.update(timestamp="[/x] not a time", client_version="1.0", response_text="A")
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
+        writer.writeheader()
+        writer.writerow(b_row)
+    # In the pilot: Rich markup in a file value is printed as text, not parsed.
+    result = runner.invoke(app, ["import", str(path), "-s", str(root)], env=ENV)
+    assert result.exit_code == 2 and "[/x] not a time" in result.output, result.output
+    # In the main study: the run id is printed as written (Rich emoji codes are off).
+    refused = runner.invoke(app, ["import", str(path), "-s", str(study_dir)], env=ENV)
+    assert refused.exit_code == 2
+    assert f"run_id '{b_row['run_id']}' is not in the plan" in refused.output, refused.output

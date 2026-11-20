@@ -81,8 +81,9 @@ app = typer.Typer(
     # local can hold the API key. Keep them out on every supported Typer version.
     pretty_exceptions_show_locals=False,
 )
-console = Console(highlight=False, soft_wrap=True)
-err_console = Console(stderr=True, highlight=False, soft_wrap=True)
+# emoji=False: run ids such as "pilot:B:T6:r1" contain ":B:", which Rich would print as 🅱.
+console = Console(highlight=False, soft_wrap=True, emoji=False)
+err_console = Console(stderr=True, highlight=False, soft_wrap=True, emoji=False)
 
 F = TypeVar("F", bound=Callable[..., Any])
 
@@ -753,7 +754,7 @@ def import_(
     result = import_file(s, file, parse_timezone(default_tz))
     if result.errors:
         for err in result.errors:
-            err_console.print(f"[red]{err}[/]")
+            err_console.print(f"[red]{escape(err)}[/]")  # errors quote file values
         raise StudyError(f"{len(result.errors)} invalid row(s); nothing was imported")
     merged = merge_records(s, result.records, replace=replace, dry_run=dry_run)
     if merged.conflicts:
@@ -1063,7 +1064,7 @@ def grade_import(
         result = import_blind_sheet(s, sheet, key or sheet.with_name("blind-key.json"), grader)
         if result.errors:
             for err in result.errors:
-                err_console.print(f"[red]{err}[/]")
+                err_console.print(f"[red]{escape(err)}[/]")  # errors quote file values
             raise StudyError(f"{len(result.errors)} invalid row(s); no grades were imported")
         if result.grades:
             append_jsonl(s.grades_path, result.grades)

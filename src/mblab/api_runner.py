@@ -30,6 +30,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from mblab import install_hint
 from mblab.records import build_record
 from mblab.schema import ApiReported, ExperimentDefinition, PlannedRun, RunPlan, RunRecord
 from mblab.study import (
@@ -45,7 +46,7 @@ from mblab.study import (
 
 API_KEY_ENV = "OPENAI_API_KEY"
 __all__ = ["LOCK_FILE", "UNRECORDED_FILE"]  # re-exported: older imports use api_runner's names
-INSTALL_HINT = 'the official_api runner needs the OpenAI SDK: pip install "model-behavior-lab[api]"'
+INSTALL_HINT = install_hint("api", "the official_api runner needs the OpenAI SDK")
 #: Retries after a transient error (rate limit, connection problem, 5xx).
 DEFAULT_MAX_RETRIES = 2
 DEFAULT_RETRY_WAIT = 10.0
@@ -190,12 +191,19 @@ def api_key_is_set() -> bool:
 def make_client(sdk: Any) -> Any:
     """An SDK client with the key from the environment and SDK retries disabled.
 
-    Retries are done here instead, so the timer covers one attempt only.
+    Retries are done here instead, so the timer covers one attempt only. If the SDK
+    cannot create a client (an unreadable SSL_CERT_FILE, say), the error becomes one
+    line with the key removed instead of a traceback through frames that hold the key.
     """
     key = os.environ.get(API_KEY_ENV, "").strip()
     if not key:
         raise StudyError(f"set the {API_KEY_ENV} environment variable (the key is never stored)")
-    return sdk.OpenAI(api_key=key, max_retries=0)
+    try:
+        return sdk.OpenAI(api_key=key, max_retries=0)
+    except Exception as exc:
+        raise StudyError(
+            redact(f"could not create the OpenAI client: {type(exc).__name__}: {exc}")
+        ) from None
 
 
 def redact(text: str) -> str:

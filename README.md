@@ -93,7 +93,12 @@ mblab --version
 
 With [uv](https://docs.astral.sh/uv/) instead: `uv sync --extra dashboard`, then prefix
 commands with `uv run` (for example `uv run mblab --version`). `uv.lock` pins the exact
-versions used in CI.
+versions used in CI. `uv sync` keeps only the extras you name and removes the others, so
+list every one you use: `uv sync --extra dashboard --extra api`.
+
+model-behavior-lab is not published on PyPI. Install it from this repository as shown
+(or `pip install "git+https://github.com/cynkai/model-behavior-lab"`), never with
+`pip install model-behavior-lab`: a package of that name on PyPI would not be this project.
 
 ### 1. Try it on synthetic demo data
 
@@ -183,6 +188,12 @@ Everything is a local file. There is no database and no server-side component.
   results export) are UTF-8 with a byte-order mark, so spreadsheet apps read them
   correctly. Save them back as "CSV UTF-8". On import, a `prompt_text` that differs from
   the planned prompt is refused unless the row records a `protocol_deviation`.
+- **No formulas in exported CSV files.** A spreadsheet runs a cell that starts with `=`,
+  `+`, `-`, `@`, a tab, or a carriage return as a formula, so a response such as
+  `=HYPERLINK(...)` could act when the file is opened. Such text is written with a
+  leading apostrophe, which makes the app show it as text (numbers like `-3.5` are left
+  alone); `mblab import` and `mblab grade import` remove that apostrophe again. The
+  dashboard shows text from a study literally, never as Markdown links or images.
 
 ## The first experiment
 
@@ -229,7 +240,7 @@ OpenAI Python SDK and the Responses API, on the same six tasks as the UI experim
 (3 conditions × 6 tasks × 3 repetitions = 54 requests).
 
 ```bash
-pip install -e ".[api]"                     # or: uv sync --extra api
+pip install -e ".[api]"                     # or: uv sync --extra api --extra dashboard
 mblab init api-study --template openai-reasoning-effort
 # Edit api-study/experiment.yaml: set api.model and the effort levels it accepts.
 mblab plan -s api-study

@@ -8,6 +8,11 @@ Run with ``mblab dashboard -s <study-dir>``. Pages:
 * Task-level results — per-task accuracy and every repetition
 * Individual responses — filter and read single runs
 * Methodology & limitations — what is and is not measured, claims ledger
+
+Streamlit renders text, captions, alerts, and widget labels as Markdown. Every value
+taken from a study (definition, plan, records, or messages built from them) goes through
+``md_text`` first, so a study file from someone else cannot add links, remote images, or
+formatting. Full texts (prompts, responses) are shown with ``st.code``, which is literal.
 """
 
 from __future__ import annotations
@@ -32,6 +37,7 @@ from mblab.formatting import (
     METRIC_UNITS,
     VERDICT_SHORT,
     interval_text,
+    md_text,
     method_text,
     metric_value,
     pct,
@@ -105,10 +111,10 @@ def _banner(a: Analysis) -> None:
 
 def page_overview(study: Study, a: Analysis) -> None:
     d = a.definition
-    st.title(d.title)
+    st.title(md_text(d.title))
     st.caption(
-        f"`{d.experiment_id}` v{d.experiment_version} · service: {d.service} · platform: "
-        f"{d.platform} · method: {d.execution_method}"
+        f"`{d.experiment_id}` v{md_text(d.experiment_version)} · service: {md_text(d.service)} "
+        f"· platform: {md_text(d.platform)} · method: {d.execution_method}"
     )
     _banner(a)
     planned = len(a.plan.runs) if a.plan else 0
@@ -124,11 +130,11 @@ def page_overview(study: Study, a: Analysis) -> None:
     )
     st.subheader("Research question")
     for q in d.research_questions:
-        st.markdown(f"- {q.strip()}")
+        st.markdown(f"- {md_text(q)}")
     st.subheader("Hypotheses (pre-registered)")
     for h in d.hypotheses:
-        lines = [f"- **{h.id}** — {h.statement.strip()}"]
-        lines += [f"    - Prediction: {p}" for p in h.predictions]
+        lines = [f"- **{md_text(h.id)}** — {md_text(h.statement)}"]
+        lines += [f"    - Prediction: {md_text(p)}" for p in h.predictions]
         st.markdown("\n".join(lines))
     st.subheader("Documented facts")
     if d.documented_facts:
@@ -179,13 +185,16 @@ def page_overview(study: Study, a: Analysis) -> None:
     issues = [i for i in a.validation.issues if i.severity != "info"]
     if not issues:
         st.success("No errors or warnings.")
+    # Issue codes are mblab's own identifiers; messages quote values from the study.
     for issue in issues:
-        (st.error if issue.severity == "error" else st.warning)(f"`{issue.code}` {issue.message}")
+        (st.error if issue.severity == "error" else st.warning)(
+            f"`{issue.code}` {md_text(issue.message)}"
+        )
     notes = [i for i in a.validation.issues if i.severity == "info"]
     if notes:
         with st.expander(f"{len(notes)} note(s)"):
             for issue in notes:
-                st.markdown(f"- `{issue.code}` {issue.message}")
+                st.markdown(f"- `{issue.code}` {md_text(issue.message)}")
 
 
 def page_record(study: Study, a: Analysis) -> None:
@@ -240,9 +249,12 @@ def page_record(study: Study, a: Analysis) -> None:
     )
     run = a.plan.by_run_id()[run_id]
     task = d.task(run.task_id)
-    st.markdown(f"**#{run.sequence} · {run.run_id}** — task {task.id}: {task.title}")
+    st.markdown(
+        f"**#{run.sequence} · {md_text(run.run_id)}** — task {md_text(task.id)}: "
+        f"{md_text(task.title)}"
+    )
     for number, step in enumerate(condition_instructions(d, run), start=1):
-        st.markdown(f"{number}. {step}")
+        st.markdown(f"{number}. {md_text(step)}")
     st.caption("Prompt — send exactly this (use the copy button):")
     st.code(task.prompt, language=None, wrap_lines=True)
 
@@ -273,7 +285,7 @@ def _record_form(study: Study, a: Analysis, run_id: str, exists: bool) -> None:
         st.warning('This run already has a record. Tick "Replace" in the form to overwrite it.')
     flash = st.session_state.pop("mblab_flash", None)
     if flash:
-        st.success(flash)
+        st.success(md_text(flash))
     with st.form(f"record-{run_id}", clear_on_submit=False):
         st.markdown("**Record what the client showed**")
         c1, c2 = st.columns(2)
@@ -301,7 +313,7 @@ def _record_form(study: Study, a: Analysis, run_id: str, exists: bool) -> None:
                     "unknown" if "unknown" in conf.allowed_values else conf.allowed_values[0]
                 )
                 conf_values[conf.id] = cols[i % len(cols)].selectbox(
-                    conf.question,
+                    md_text(conf.question),  # widget labels render Markdown, images included
                     conf.allowed_values,
                     index=conf.allowed_values.index(default)
                     if default in conf.allowed_values
@@ -355,20 +367,20 @@ def _record_form(study: Study, a: Analysis, run_id: str, exists: bool) -> None:
             recorded_by=recorder,
         )
     except ValidationError as exc:
-        st.error(f"Not saved: {format_validation_error(exc)}")
+        st.error(f"Not saved: {md_text(format_validation_error(exc))}")
         return
     except ValueError as exc:
-        st.error(f"Not saved: {exc}")
+        st.error(f"Not saved: {md_text(exc)}")
         return
     try:
         merged = merge_records(Study.load(study.root), [record], replace=replace, dry_run=False)
     except StudyError as exc:  # e.g. another command is writing to the study right now
-        st.error(f"Not saved: {exc}")
+        st.error(f"Not saved: {md_text(exc)}")
         st.code(record.model_dump_json(), language="json", wrap_lines=True)
         return
     if merged.conflicts:
         st.error(
-            f"Not saved: run {record.run_id} already has a record (saved by another command "
+            f"Not saved: run {md_text(record.run_id)} already has a record (saved by another command "
             'meanwhile, or "Replace" was not ticked). Your entry is below if you want to '
             "keep it instead."
         )
@@ -490,10 +502,10 @@ def _ui_label_sections(a: Analysis, mode: str | None, conf: int) -> None:
         st.caption("No condition uses a per-message selection.")
     for o in a.overrides:
         kind = "same setting twice" if o.stacked else "per-message differs from default"
-        st.markdown(f"**Condition {o.condition_id}** ({kind})")
-        st.markdown(f"Labels: {o.label_summary}")
+        st.markdown(f"**Condition {md_text(o.condition_id)}** ({kind})")
+        st.markdown(f"Labels: {md_text(o.label_summary)}")  # displayed labels, as recorded
         if o.note:
-            st.caption(o.note)
+            st.caption(md_text(o.note))
             continue
         rows = [
             {
@@ -512,7 +524,7 @@ def _ui_label_sections(a: Analysis, mode: str | None, conf: int) -> None:
         _table(pd.DataFrame(rows))
         with st.expander("What the assessments mean"):
             for m in o.metrics:
-                st.markdown(f"- *{m.metric}*: {m.explanation}")
+                st.markdown(f"- *{md_text(m.metric)}*: {md_text(m.explanation)}")
 
 
 def _comparison_sections(a: Analysis, conf: int) -> None:
@@ -520,7 +532,7 @@ def _comparison_sections(a: Analysis, conf: int) -> None:
     if tallies:
         st.subheader("Hypothesis tallies")
         for tally in tallies:
-            st.markdown(f"- {tally.sentence()}")
+            st.markdown(f"- {md_text(tally.sentence())}")
     st.subheader("Pairwise differences (descriptive)")
     if a.comparisons.empty:
         st.caption("Not enough data.")
@@ -711,7 +723,7 @@ def page_methodology(study: Study, a: Analysis) -> None:
     with c2:
         st.subheader("Not observable here")
         for item in d.not_observable or ["Server-side model identity, routing and effort."]:
-            st.markdown(f"- {item}")
+            st.markdown(f"- {md_text(item)}")
     st.subheader("Claims ledger")
     names = {
         "documented_fact": "documented fact",
@@ -727,7 +739,7 @@ def page_methodology(study: Study, a: Analysis) -> None:
     )
     st.subheader("Limitations")
     for lim in a.limitations:
-        st.markdown(f"- {lim.text}")
+        st.markdown(f"- {md_text(lim.text)}")
     st.subheader("Scoring rules (pre-registered)")
     _table(
         pd.DataFrame(
@@ -752,7 +764,7 @@ def page_methodology(study: Study, a: Analysis) -> None:
     )
     if d.latency_protocol:
         st.subheader("Response-time protocol")
-        st.markdown(d.latency_protocol.strip())
+        st.markdown(md_text(d.latency_protocol))
     st.subheader("Reproduction")
     _table(
         pd.DataFrame(
@@ -791,7 +803,7 @@ def main() -> None:
     try:
         study, analysis = _load(str(root.resolve()), _stamp(root))
     except StudyError as exc:
-        st.error(str(exc))
+        st.error(md_text(exc))
         st.stop()
     with st.sidebar:
         if analysis.synthetic:

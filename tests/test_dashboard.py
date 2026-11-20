@@ -5,13 +5,19 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+import yaml
 
 pytest.importorskip("streamlit")
 from streamlit.testing.v1 import AppTest
 
 from mblab.dashboard import PAGES
 from mblab.demo import create_demo_study
-from mblab.study import Study
+from mblab.formatting import md_text
+from mblab.plan import generate_plan
+from mblab.schema import ExperimentDefinition
+from mblab.study import Study, save_plan, template_text
+
+from .conftest import FIXED_NOW, make_record, write_records
 
 APP = str(Path(__file__).resolve().parents[1] / "src" / "mblab" / "dashboard" / "app.py")
 
@@ -72,7 +78,7 @@ def test_recording_form_saves_a_record(monkeypatch, study_dir):
     assert record.run_id == "B:T1:r1"
     assert record.latency_seconds == 12.5 and record.latency_method == "manual_stopwatch"
     assert record.response_text == "Work.\nANSWER: 265"
-    assert any("Saved B:T1:r1" in s.value for s in at.success)
+    assert any(md_text("Saved B:T1:r1.") == s.value for s in at.success)
 
 
 def test_recording_is_disabled_for_demo_studies(monkeypatch, tmp_path):
@@ -170,3 +176,65 @@ def test_saving_moves_on_and_replacing_needs_the_tick(monkeypatch, study_dir, de
     (record,) = [r for r in Study.load(study_dir).records if r.run_id == "B:T1:r1"]
     assert record.notes == "second"
     assert (study_dir / "records.jsonl.bak").exists()
+
+
+PAYLOAD = "![pixel](https://example.invalid/p.png) [open](https://example.invalid/x)"
+
+
+def _markdown_strings(at: AppTest) -> list[str]:
+    """Everything Streamlit renders as Markdown: text, captions, alerts, widget labels."""
+    texts = []
+    for elements in (
+        at.title,
+        at.subheader,
+        at.markdown,
+        at.caption,
+        at.error,
+        at.warning,
+        at.info,
+        at.success,
+    ):
+        texts += [e.value for e in elements]
+    for widgets in (at.selectbox, at.multiselect, at.text_input, at.expander):
+        texts += [w.label for w in widgets]
+    return texts
+
+
+def test_text_from_a_study_is_never_rendered_as_markdown(monkeypatch, tmp_path):
+    # A study shared by someone else: Markdown in its definition or records must not
+    # turn into links or images that load from a remote server.
+    data = yaml.safe_load(template_text())
+    data["title"] = f"Shared study {PAYLOAD}"
+    data["service"] = PAYLOAD
+    data["research_questions"] = [PAYLOAD]
+    data["hypotheses"][0]["statement"] = PAYLOAD
+    data["hypotheses"][0]["predictions"] = [PAYLOAD]
+    data["not_observable"] = [PAYLOAD]
+    data["latency_protocol"] = PAYLOAD
+    data["confounders"][0]["question"] = PAYLOAD
+    definition = ExperimentDefinition.model_validate(data)
+    plan = generate_plan(definition, now=FIXED_NOW)
+    root = tmp_path / "shared"
+    root.mkdir()
+    (root / "experiment.yaml").write_text(yaml.safe_dump(data), encoding="utf-8")
+    save_plan(plan, root / "plan.json")
+    first, second = sorted(plan.runs, key=lambda r: r.sequence)[:2]
+    write_records(
+        root,
+        [
+            make_record(definition, plan, first.run_id, protocol_deviation=PAYLOAD),
+            make_record(definition, plan, second.run_id, client_version=PAYLOAD),
+        ],
+    )
+    at = _app(monkeypatch, root)
+    shown = []
+    for page in PAGES:
+        _goto(at, page)
+        texts = _markdown_strings(at)
+        assert not [t for t in texts if "](https://example.invalid" in t], page
+        shown += texts
+    # The payload reached the pages, escaped: from the title, the confounder question
+    # (a widget label), a validation note (record text), and the methodology page.
+    assert any(md_text(f"Shared study {PAYLOAD}") == t for t in shown)
+    assert md_text(PAYLOAD) in shown
+    assert any(md_text(PAYLOAD) in t for t in shown if t.startswith("- `excluded_record`"))

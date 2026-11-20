@@ -18,6 +18,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import ValidationError
 
+from mblab.csvcells import from_row, to_cell
 from mblab.records import build_record
 from mblab.schema import RunRecord
 from mblab.study import (
@@ -71,7 +72,8 @@ def write_template_csv(study: Study, path: Path) -> int:
     columns = template_columns(study)
     path.parent.mkdir(parents=True, exist_ok=True)
     # UTF-8 with a byte-order mark: spreadsheet apps (Excel in particular) then read
-    # non-ASCII text such as "—" correctly instead of garbling it.
+    # non-ASCII text such as "—" correctly instead of garbling it. Cells go through
+    # to_cell, so a prompt that starts with "=" is shown as text, not run as a formula.
     with path.open("w", encoding="utf-8-sig", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=columns)
         writer.writeheader()
@@ -87,7 +89,7 @@ def write_template_csv(study: Study, path: Path) -> int:
                 repetition=run.repetition,
                 prompt_text=study.definition.task(run.task_id).prompt,
             )
-            writer.writerow(row)
+            writer.writerow({col: to_cell(value) for col, value in row.items()})
     return len(plan.runs)
 
 
@@ -241,7 +243,9 @@ def read_csv_rows(path: Path) -> list[dict[str, str]]:
             f"{path} is not UTF-8 text (byte {exc.start}). Save it from your spreadsheet as "
             '"CSV UTF-8" and import it again'
         ) from None
-    return list(csv.DictReader(io.StringIO(text)))
+    # from_row removes the apostrophe that mblab puts before text a spreadsheet would
+    # run as a formula, so the template's prompt_text matches the planned prompt again.
+    return [from_row(row) for row in csv.DictReader(io.StringIO(text))]
 
 
 def import_file(study: Study, path: Path, default_tz: tzinfo | None = None) -> ImportResult:

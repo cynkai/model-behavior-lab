@@ -199,8 +199,8 @@ again, so concurrent commands cannot lose or duplicate a run.
 
 An official-API study sends the same kind of pre-registered tasks through a provider's
 official API instead of a client app. The implemented case is the OpenAI Responses API
-with `reasoning.effort`, through the official `openai` Python SDK (`pip install
-"model-behavior-lab[api]"`). The bundled template `openai-reasoning-effort` compares
+with `reasoning.effort`, through the official `openai` Python SDK (the `api` extra:
+`pip install -e ".[api]"` in a clone). The bundled template `openai-reasoning-effort` compares
 low / medium / high effort of one model on the six tasks of the UI experiment.
 
 **Definition.** `execution_method: official_api` requires an `api` section (`provider`,

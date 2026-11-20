@@ -7,7 +7,10 @@ import pytest
 from typer.testing import CliRunner
 
 from mblab.cli import app
+from mblab.csvcells import FORMULA_STARTS
 from mblab.study import Study
+
+from .conftest import make_record, write_records
 
 runner = CliRunner()
 ENV = {"COLUMNS": "200", "NO_COLOR": "1"}
@@ -194,6 +197,37 @@ def test_demo_analyze_and_export(tmp_path):
 
     again = run("demo", root)
     assert again.exit_code == 2 and "not empty" in again.output
+
+
+def _runs_as_formula(value: str) -> bool:
+    """True if a spreadsheet would run this CSV cell as a formula (numbers never are)."""
+    if not value or value[0] not in FORMULA_STARTS:
+        return False
+    try:
+        float(value.replace(",", "."))
+    except ValueError:
+        return True
+    return False
+
+
+def test_export_csv_shows_formula_text_as_text(study_dir, definition, plan):
+    first, second = sorted(plan.runs, key=lambda r: r.sequence)[:2]
+    formula = '=HYPERLINK("https://example.invalid","Open")'
+    write_records(
+        study_dir,
+        [
+            make_record(definition, plan, first.run_id, response_text=formula),
+            make_record(definition, plan, second.run_id, response_text="- one\n- two"),
+        ],
+    )
+    assert run("export", "-s", study_dir).exit_code == 0
+    with (study_dir / "exports" / "results.csv").open(encoding="utf-8-sig", newline="") as handle:
+        rows = {r["run_id"]: r for r in csv.DictReader(handle)}
+    assert rows[first.run_id]["response_text"] == "'" + formula
+    assert rows[second.run_id]["response_text"] == "'- one\n- two"
+    assert rows[first.run_id]["latency_seconds"] == "10.0"  # numbers are not touched
+    for row in rows.values():
+        assert not [v for v in row.values() if _runs_as_formula(v)], row
 
 
 def test_analyze_without_records_shows_no_numbers(planned):

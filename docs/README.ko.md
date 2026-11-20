@@ -76,7 +76,13 @@ mblab --version
 
 [uv](https://docs.astral.sh/uv/)를 쓴다면 `uv sync --extra dashboard` 후 명령 앞에
 `uv run`을 붙이면 됩니다(예: `uv run mblab --version`). `uv.lock`에 CI에서 쓰는 정확한
-버전이 고정되어 있습니다.
+버전이 고정되어 있습니다. `uv sync`는 지정한 extra만 남기고 나머지는 지우므로, 쓰는 extra를
+모두 적으세요: `uv sync --extra dashboard --extra api`.
+
+model-behavior-lab은 PyPI에 올라가 있지 않습니다. 위처럼 이 저장소에서 설치하거나
+`pip install "git+https://github.com/cynkai/model-behavior-lab"`를 쓰세요.
+`pip install model-behavior-lab`은 쓰지 마세요. PyPI에 그 이름의 패키지가 있더라도 이
+프로젝트가 아닙니다.
 
 ### 1. 합성 데모 데이터로 체험하기
 
@@ -165,6 +171,12 @@ my-study/
   스프레드시트 앱이 바로 읽을 수 있도록 BOM이 붙은 UTF-8입니다. 저장할 때도 "CSV UTF-8"로
   저장하세요. 가져올 때 `prompt_text`가 계획된 프롬프트와 다르면, 그 행에
   `protocol_deviation`이 적혀 있지 않은 한 거부합니다.
+- **내보낸 CSV에는 수식이 없습니다.** 스프레드시트는 `=`, `+`, `-`, `@`, 탭, 캐리지 리턴으로
+  시작하는 칸을 수식으로 실행하므로, `=HYPERLINK(...)` 같은 응답이 파일을 여는 순간 동작할
+  수 있습니다. mblab은 이런 텍스트 앞에 아포스트로피를 붙여 써서 텍스트로 보이게 합니다
+  (`-3.5` 같은 숫자는 그대로 둡니다). `mblab import`와 `mblab grade import`는 그
+  아포스트로피를 다시 뗍니다. 대시보드는 실험 파일의 텍스트를 Markdown 링크나 이미지로
+  해석하지 않고 적힌 그대로 보여 줍니다.
 
 ## 첫 번째 실험
 
@@ -196,7 +208,7 @@ my-study/
 high)를 UI 실험과 같은 6개 문제로 비교합니다(조건 3 × 문제 6 × 반복 3 = 요청 54회).
 
 ```bash
-pip install -e ".[api]"                     # 또는: uv sync --extra api
+pip install -e ".[api]"                     # 또는: uv sync --extra api --extra dashboard
 mblab init api-study --template openai-reasoning-effort
 # api-study/experiment.yaml에서 api.model과 그 모델이 받는 추론 수준을 정합니다.
 mblab plan -s api-study

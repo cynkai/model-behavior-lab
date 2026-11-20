@@ -26,6 +26,7 @@ from mblab.formatting import (
     metric_value,
     pct,
     pct_ci,
+    position_text,
     seconds,
     tokens,
 )
@@ -115,6 +116,15 @@ def _header(a: Analysis, study: Study, now: datetime) -> list[str]:
         out += [f"> **{DEMO_BANNER}**", ""]
     if d.pilot:
         out += [f"> **{PILOT_BANNER}**", ""]
+    departures = a.settings.departures(d)
+    if departures:
+        out += [
+            "> **NOT THE PRE-REGISTERED ANALYSIS:** "
+            + "; ".join(departures)
+            + ". The settings fixed in experiment.yaml were overridden on the command line, so "
+            "every result below is exploratory.",
+            "",
+        ]
     if a.validation.errors:
         out += [
             f"> **VALIDATION ERRORS ({len(a.validation.errors)}).** Records that cannot be "
@@ -328,6 +338,11 @@ def _method(a: Analysis) -> list[str]:
         f"proportions), percentile bootstrap with {s.bootstrap_resamples} resamples and seed "
         f"{s.seed} (differences of medians). Groups with fewer than {s.min_n} observations are "
         "not compared.",
+        f"- Per-message vs. default: a condition counts as consistent with a reference only if "
+        f"the interval for their difference lies within ±{s.equivalence_fraction:.0%} of the gap "
+        "between the two reference conditions (a pre-registered equivalence margin). An interval "
+        "that merely includes 0 is inconclusive. The position column places the condition on a "
+        "scale where the default-only reference is 0 and the per-message reference is 1.",
         "- Runs with a recorded protocol deviation are excluded from the primary analysis and "
         "listed in Appendix A.",
         "",
@@ -520,6 +535,7 @@ def _label_results(a: Analysis) -> list[str]:
                     f"Per-message ref. ({o.override_ref})",
                     f"vs. default ref. [{conf}% CI]",
                     f"vs. per-message ref. [{conf}% CI]",
+                    f"Position, 0 = default, 1 = per-message [{conf}% CI]",
                     "Assessment",
                 ],
                 [
@@ -530,6 +546,7 @@ def _label_results(a: Analysis) -> list[str]:
                         metric_value(m.override_ref_value, m.unit),
                         interval_text(m.vs_default, m.unit),
                         "—" if o.stacked else interval_text(m.vs_override, m.unit),
+                        "—" if o.stacked else position_text(m.position),
                         VERDICT_SHORT[m.verdict],
                     ]
                     for m in o.metrics

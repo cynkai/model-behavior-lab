@@ -34,7 +34,9 @@ from .test_analysis import BANNED
 
 API_TEMPLATE = "openai-reasoning-effort"
 FAKE_KEY = "sk-test-" + "k" * 24  # assembled at runtime; not a real key
-UI_TEMPLATE_HASH = "ff3c102876cce68e3520c9ce9775c802ccd3b0b813b86038deb0ea44bc88472b"
+UI_TEMPLATE_HASH = "4075fc490b39e393a122cce6262e3ebdc1b0fcbdceb6acf2292fd6d79c9a4fa2"
+#: The same template as shipped in 0.1.0, before the pre-registered `analysis:` section.
+UI_TEMPLATE_HASH_0_1 = "ff3c102876cce68e3520c9ce9775c802ccd3b0b813b86038deb0ea44bc88472b"
 
 
 # -- a fake `openai` module ------------------------------------------------------------
@@ -220,6 +222,10 @@ def test_api_template_reuses_the_verified_tasks(api_definition, definition):
 def test_ui_definition_hash_is_unchanged(definition):
     # Plans made before official_api fields existed must stay valid.
     assert definition.sha256() == UI_TEMPLATE_HASH
+    # A study made from the template before it had an `analysis:` section keeps its hash.
+    data = definition.model_dump(mode="json")
+    data.pop("analysis")
+    assert ExperimentDefinition.model_validate(data).sha256() == UI_TEMPLATE_HASH_0_1
     dumped = definition.model_dump(mode="json")
     assert "api" not in dumped
     assert all("reasoning_effort" not in o for o in dumped["selection_options"])

@@ -326,9 +326,14 @@ The full write-up is [docs/methodology.md](docs/methodology.md).
   describe this fixed task set only.
 - **Per-message vs. default.** For a condition such as C (Instant + Pro), a metric can
   only indicate which selection applied if the two reference conditions (A and B) differ
-  on it. If they do not, the result is *references not distinguishable*. Otherwise the
-  result is *consistent with the per-message selection*, *consistent with the default*,
-  *differs from both*, or *inconclusive* — never "proven".
+  on it. If they do not, the result is *references not distinguishable*. Otherwise it is
+  *consistent with the per-message selection* or *with the default* only when the interval
+  for the difference fits inside a pre-registered equivalence margin (half the gap
+  between the references by default), *between the two references* or *differs from
+  both* when it differs from both, and *inconclusive* otherwise — never "proven". A
+  position from 0 (default-only) to 1 (per-message) shows where the condition lies. The
+  confidence level, minimum group size, and margin are fixed in `experiment.yaml`
+  (`analysis:`); overriding them on the command line marks the result exploratory.
 - **Wording.** Reports say "consistent with", "not distinguishable", "not observable".
   A test fails the build if generated text uses words like "proves" or "confirms".
 

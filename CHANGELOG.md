@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+### Per-message vs. default verdicts
+
+- "Consistent with the per-message selection" (or the default) now needs the interval for
+  the difference from that reference to lie inside a pre-registered equivalence margin
+  (± `equivalence_fraction` × the gap between the references, 0.5 by default). Before, a
+  difference that was merely not distinguishable counted as consistent: in 2,000
+  simulated studies a condition halfway between the references was called consistent
+  with one of them 75% of the time; now 3%.
+- New verdict *between the two references* (differs from both, on opposite sides, such as
+  a per-message selection applied in some runs only), and every assessment reports the
+  condition's position λ (0 = default-only reference, 1 = per-message reference) with a
+  bootstrap interval in the CLI, the report, and the dashboard.
+- Hypothesis tallies count only assessments that place a condition, never count "no
+  difference detected" as support for a no-difference prediction, and say the metrics
+  are not independent.
+- The confidence level, the minimum group size (at least 5), and the margin are
+  pre-registered in `experiment.yaml` under `analysis:` (both bundled templates now state
+  them; a definition without the section keeps its hash and gets the defaults).
+  `--confidence` / `--min-n` still override them, within range, but label the analysis
+  exploratory with a warning, a report banner, and a limitation.
+
 ### Bad data kept out of the analysis
 
 - Imports refuse records that do not belong to the plan: a run that is not planned, or

@@ -154,6 +154,18 @@ confounders:
     question: Network connection during the run.
     allowed_values: [wifi, cellular, unknown]
 
+# Pre-registered analysis settings. Fix them before collecting data, like the
+# scoring rules: `mblab analyze` and `mblab report` use them, and overriding one on
+# the command line labels the results exploratory.
+analysis:
+  confidence: 0.95          # confidence level of every interval (0.8 to 0.995)
+  min_n: 5                  # fewest observations per group for a comparison (at least 5)
+  # A per-message condition counts as consistent with a reference condition only if
+  # the interval for their difference lies within this fraction of the gap between
+  # the two references (0.5: closer to that reference than to the other one; 0.25
+  # is stricter and needs more runs). Up to 0.5.
+  equivalence_fraction: 0.5
+
 latency_protocol: >-
   Start a stopwatch the moment you tap send. Stop it when the response has
   finished streaming (the stop button turns back into the send button). Record

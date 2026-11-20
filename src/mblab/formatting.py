@@ -27,6 +27,7 @@ VERDICT_SHORT = {
     "references_not_distinguishable": "references not distinguishable",
     "consistent_with_per_message": "consistent with the per-message selection",
     "consistent_with_default": "consistent with the default selection",
+    "between_references": "between the two references",
     "differs_from_both": "differs from both references",
     "inconclusive": "inconclusive",
     "no_difference_detected": "no difference detected",
@@ -93,6 +94,15 @@ def interval_text(iv: Interval | None, unit: str) -> str:
     if iv is None:
         return "—"
     return f"{signed(iv.estimate, unit)} [{_num(iv.low, unit)}, {_num(iv.high, unit)}]"
+
+
+def position_text(iv: Interval | None) -> str:
+    """Position between the references (0 = default-only, 1 = per-message) with its interval."""
+    if iv is None:
+        return "—"
+    if _missing(iv.low) or _missing(iv.high):
+        return f"{iv.estimate:.2f} (no interval)"
+    return f"{iv.estimate:.2f} [{iv.low:.2f}, {iv.high:.2f}]"
 
 
 def tokens(value: float | None) -> str:

@@ -293,6 +293,31 @@ def _duplicates(items: list[str]) -> list[str]:
     return dups
 
 
+class AnalysisPlan(StrictModel):
+    """Pre-registered analysis settings (the ``analysis:`` section of experiment.yaml).
+
+    Fixed before data collection like the scoring rules, so a confidence level or an
+    equivalence margin cannot be chosen after seeing which one gives a verdict.
+    """
+
+    confidence: float = Field(
+        default=0.95, ge=0.8, le=0.995, description="Confidence level of every interval."
+    )
+    min_n: int = Field(
+        default=5, ge=5, description="Fewest usable observations per group for a comparison."
+    )
+    equivalence_fraction: float = Field(
+        default=0.5,
+        gt=0,
+        le=0.5,
+        description=(
+            "A condition counts as consistent with a reference condition only if the interval "
+            "for their difference lies within this fraction of the gap between the two "
+            "reference conditions (on either side)."
+        ),
+    )
+
+
 class ExperimentDefinition(StrictModel):
     schema_version: Literal[1] = 1
     experiment_id: Identifier
@@ -315,6 +340,10 @@ class ExperimentDefinition(StrictModel):
     api: ApiSettings | None = Field(
         default=None, description="Required for official_api studies, not allowed otherwise."
     )
+    analysis: AnalysisPlan | None = Field(
+        default=None,
+        description="Pre-registered analysis settings; the defaults apply when omitted.",
+    )
     demo: bool = Field(
         default=False, description="True only for synthetic demo studies created by `mblab demo`."
     )
@@ -328,7 +357,8 @@ class ExperimentDefinition(StrictModel):
 
     @model_serializer(mode="wrap")
     def _serialize(self, handler: Any) -> dict[str, Any]:
-        data = _drop_unset(handler(self), "api")
+        # An omitted `analysis` section stays omitted, so older definitions keep their hash.
+        data = _drop_unset(handler(self), "api", "analysis")
         if not data.get("pilot"):
             data.pop("pilot", None)  # keeps the hash of non-pilot definitions unchanged
         return data

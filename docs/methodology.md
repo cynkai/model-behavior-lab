@@ -160,23 +160,59 @@ conditions are *X with no per-message selection* (default-only reference) and *Y
 per-message selection* (per-message reference). For each metric (accuracy, thinking
 indicator rate, median response time, median displayed thinking time):
 
+Let *gap* be the difference between the two references and *f* the pre-registered
+`analysis.equivalence_fraction` (default 0.5). The **equivalence margin** is ±*f* × |gap|.
+
 | Step | Check | Result |
 |---|---|---|
 | 1 | Any group below the minimum size | **insufficient data** |
 | 2 | The two references are not distinguishable (interval of their difference includes 0) | **references not distinguishable** — the metric cannot say which selection applied |
-| 3 | Differs from the default-only reference, not from the per-message reference | **consistent with the per-message selection** |
-| 4 | Differs from the per-message reference, not from the default-only reference | **consistent with the default selection** |
-| 5 | Differs from both | **differs from both references** — look for confounders |
-| 6 | Differs from neither | **inconclusive** |
+| 3 | The interval for (condition − per-message reference) lies inside the margin | **consistent with the per-message selection** |
+| 4 | The interval for (condition − default-only reference) lies inside the margin | **consistent with the default selection** |
+| 5 | Differs from both references, on opposite sides | **between the two references** — e.g. the per-message selection applied in some runs only |
+| 6 | Differs from both references, on the same side | **differs from both references** — look for confounders |
+| 7 | Anything else | **inconclusive** — the intervals are too wide to place the condition |
+
+"Not distinguishable from a reference" is never read as "consistent with it": the
+interval has to fit inside the margin. With *f* = 0.5, "consistent with the per-message
+selection" means the condition is, with the stated confidence, closer to the per-message
+reference than to the default-only one; a stricter *f* (e.g. 0.25) asks for "behaves
+like it" and needs more runs.
+
+Every assessment also reports the condition's **position** *λ* = (condition − default-only
+reference) / (per-message reference − default-only reference), with a percentile
+bootstrap interval: 0 is the default-only reference, 1 the per-message reference, 0.5
+halfway, and values outside 0..1 lie beyond a reference.
+
+How the rule behaves, from 2,000 simulated studies per row (accuracy, 18 runs per
+condition, references at 50% and 100%):
+
+| Condition truly at | Previous rule: called "consistent" | *f* = 0.5 | *f* = 0.25 |
+|---|---|---|---|
+| the per-message reference | 100% (per-message) | 88% (per-message) | 4% (per-message) |
+| halfway | 75% (either reference) | 3% | 0% |
+| 30% of the way (a partial override) | 87% (either reference) | 1% | 0% |
+| the default-only reference | 94% (default) | 2% (default) | 0% |
+
+With references at 50% and 90%, or with fewer clean differences, most results at this
+sample size are *inconclusive*; that is the honest reading of 18 runs per condition, and
+the position column still shows where each condition lies.
 
 When *X* and *Y* are the same (the "stacked" case, e.g. Extra High twice), there is one
 reference, and the result is **no difference detected** (which is not evidence of
 equivalence) or **difference detected** (cause not identified).
 
 Displayed labels are summarised separately, as counts, and are not mixed into this
-table. If a hypothesis declares `predicted_pattern`, the report counts how many usable
-assessments show that pattern — a description of the sample, not a test of the
-hypothesis.
+table. If a hypothesis declares `predicted_pattern`, the report counts how many
+assessments that place a condition (steps 3–6) show that pattern — a description of the
+sample, not a test of the hypothesis, and the metrics are related, so the assessments
+are not independent. A `no_difference` prediction is never counted as shown, since not
+detecting a difference is not equivalence.
+
+The confidence level, the minimum group size (at least 5), and *f* are fixed in
+`experiment.yaml` under `analysis:` before data collection. `--confidence` and `--min-n`
+on `mblab analyze` / `mblab report` can override them, but the output then says it is
+not the pre-registered analysis, and the report carries a banner and a limitation.
 
 ## 10. Validation
 

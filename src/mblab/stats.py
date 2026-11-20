@@ -95,6 +95,49 @@ def bootstrap_median_diff(
     return Interval(float(np.median(xa) - np.median(xb)), float(low), float(high))
 
 
+def bootstrap_position(
+    c: Sequence[float],
+    d: Sequence[float],
+    o: Sequence[float],
+    *,
+    statistic: str = "mean",
+    resamples: int = 2000,
+    confidence: float = 0.95,
+    seed: int = 0,
+) -> Interval | None:
+    """Where ``c`` lies between two references: (S(c) - S(d)) / (S(o) - S(d)).
+
+    S is the mean (for 0/1 outcomes, a proportion) or the median. 0 means "at d", 1 "at
+    o", 0.5 halfway, and values outside 0..1 lie beyond a reference. The interval is a
+    percentile bootstrap over each group's observations; resamples in which the two
+    references coincide are skipped, and no interval is given if more than 5% are.
+    """
+    xs = [np.asarray(list(v), dtype=float) for v in (c, d, o)]
+    if any(x.size == 0 for x in xs):
+        return None
+    stat = np.mean if statistic == "mean" else np.median
+    xc, xd, xo = xs
+    gap = stat(xo) - stat(xd)
+    if gap == 0:
+        return None
+    rng = random.Random(seed)
+    resampled = []
+    for x in xs:
+        idx = np.array(
+            [[int(rng.random() * x.size) for _ in range(x.size)] for _ in range(resamples)]
+        )
+        resampled.append(stat(x[idx], axis=1))
+    rc, rd, ro = resampled
+    gaps = ro - rd
+    usable = gaps != 0
+    if usable.sum() < 0.95 * resamples:
+        return Interval(float((stat(xc) - stat(xd)) / gap), math.nan, math.nan)
+    positions = (rc[usable] - rd[usable]) / gaps[usable]
+    alpha = 1 - confidence
+    low, high = np.quantile(positions, [alpha / 2, 1 - alpha / 2])
+    return Interval(float((stat(xc) - stat(xd)) / gap), float(low), float(high))
+
+
 def describe(values: Sequence[float]) -> dict[str, float | int | None]:
     """n, median, quartiles, min and max (``None`` when empty)."""
     arr = np.asarray(list(values), dtype=float)

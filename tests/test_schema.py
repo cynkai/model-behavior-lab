@@ -1,13 +1,29 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime
 
 import pytest
 import yaml
 from pydantic import ValidationError
 
-from mblab.schema import ExperimentDefinition, ManualGrade, RunRecord
-from mblab.study import StudyError, parse_definition, template_text
+from mblab import __version__
+from mblab.schema import (
+    SCHEMA_VERSION,
+    ApiReported,
+    ExperimentDefinition,
+    ManualGrade,
+    RunPlan,
+    RunRecord,
+)
+from mblab.study import (
+    Study,
+    StudyError,
+    format_validation_error,
+    parse_definition,
+    template_text,
+)
+from mblab.validate import validate_study
 
 from .conftest import FIXED_NOW, make_record
 
@@ -124,3 +140,113 @@ def test_manual_grade_bounds():
         ManualGrade(
             run_id="x", points=3, max_points=2, grader_id="g1", blind=True, graded_at=FIXED_NOW
         )
+
+
+# -- file formats ------------------------------------------------------------------------------
+
+#: Serialized keys of each file as the first format defined them. A field added later must be
+#: left out while unset (so these stay the keys of a file that does not use it, and versions
+#: before the field can still read it); a change older versions would misread bumps
+#: SCHEMA_VERSION instead. If this test fails, do one or the other — do not just add the key.
+RECORD_KEYS = {
+    "schema_version", "run_id", "experiment_id", "experiment_version", "definition_sha256",
+    "platform", "client_version", "condition_id", "model_selection", "message_override",
+    "task_id", "repetition", "execution_method", "timestamp", "data_origin", "prompt_text",
+    "response_status", "response_text", "observed_model_label", "observed_label_location",
+    "thinking_indicator", "thinking_text", "thinking_seconds", "latency_seconds",
+    "latency_method", "latency_confidence", "new_conversation", "confounders",
+    "protocol_deviation", "notes", "recorded_by", "recorded_at",
+}  # fmt: skip
+PLAN_KEYS = {
+    "schema_version", "experiment_id", "experiment_version", "definition_sha256",
+    "definition_snapshot", "seed", "strategy", "generated_at", "tool_version", "runs",
+}  # fmt: skip
+PLANNED_RUN_KEYS = {
+    "run_id", "sequence", "block", "experiment_id", "experiment_version", "platform",
+    "execution_method", "condition_id", "model_selection", "message_override", "task_id",
+    "repetition",
+}  # fmt: skip
+GRADE_KEYS = {
+    "schema_version", "run_id", "points", "max_points", "grader_id", "blind", "graded_at",
+    "notes",
+}  # fmt: skip
+
+
+def _keys(model) -> set[str]:
+    return set(json.loads(model.model_dump_json()))
+
+
+def test_files_that_use_no_newer_field_keep_their_first_format(definition, plan):
+    record = make_record(definition, plan, plan.runs[0].run_id)
+    assert _keys(record) == RECORD_KEYS
+    assert _keys(plan) == PLAN_KEYS
+    assert {k for run in plan.model_dump(mode="json")["runs"] for k in run} == PLANNED_RUN_KEYS
+    grade = ManualGrade(
+        run_id="A:T1:r1", points=1, max_points=2, grader_id="g", blind=True, graded_at=FIXED_NOW
+    )
+    assert _keys(grade) == GRADE_KEYS
+
+
+def test_api_records_write_only_the_values_the_api_returned(definition, plan):
+    ui = json.loads(make_record(definition, plan, plan.runs[0].run_id).model_dump_json())
+    record = RunRecord.model_validate(
+        {
+            **ui,
+            "execution_method": "official_api",
+            "latency_method": "client_timer",
+            "api_reported": {"model": "gpt-x", "output_tokens": 12},
+        }
+    )
+    data = json.loads(record.model_dump_json())
+    assert data["api_reported"] == {"model": "gpt-x", "output_tokens": 12}  # no "refusal": null
+    assert RunRecord.model_validate(data) == record
+    refused = ApiReported(refusal="I can't help with that.", status="completed")
+    assert json.loads(refused.model_dump_json()) == {
+        "refusal": "I can't help with that.",
+        "status": "completed",
+    }
+
+
+@pytest.mark.parametrize(
+    ("model", "kind"),
+    [(RunRecord, "record"), (ManualGrade, "grade"), (RunPlan, "plan")],
+)
+def test_newer_formats_are_refused_with_a_message_that_says_so(model, kind):
+    with pytest.raises(ValidationError) as caught:
+        model.model_validate_json(json.dumps({"schema_version": 2, "a_field_from_later": 1}))
+    message = format_validation_error(caught.value)
+    assert message == (
+        f"this {kind} has schema_version 2, a newer file format than model-behavior-lab "
+        f"{__version__} reads (up to {SCHEMA_VERSION}). Update model-behavior-lab to read it"
+    )
+
+
+def test_a_newer_definition_or_an_unknown_field_is_named_as_such():
+    newer = template_text().replace("schema_version: 1", "schema_version: 2", 1)
+    with pytest.raises(
+        StudyError, match="this definition has schema_version 2, a newer file format"
+    ):
+        parse_definition(newer)
+    typo = template_text().replace("repetitions:", "repetitons:", 1)
+    with pytest.raises(StudyError) as caught:
+        parse_definition(typo)
+    assert "repetitons: Extra inputs are not permitted" in str(caught.value)
+    assert "check the spelling, or update model-behavior-lab" in str(caught.value)
+    unknown_method = template_text().replace("method: date", "method: weekday", 1)
+    with pytest.raises(StudyError, match="update model-behavior-lab if a newer version"):
+        parse_definition(unknown_method)
+    with pytest.raises(StudyError) as caught:  # other mistakes get no such hint
+        parse_definition(template_text().replace("repetitions: 3", "repetitions: 0", 1))
+    assert "newer version" not in str(caught.value)
+
+
+def test_a_record_in_a_newer_format_is_reported_and_kept(study_dir, definition, plan):
+    good = make_record(definition, plan, plan.runs[0].run_id)
+    newer = json.dumps({**json.loads(good.model_dump_json()), "schema_version": 2})
+    (study_dir / "records.jsonl").write_text(good.model_dump_json() + "\n" + newer + "\n")
+    study = Study.load(study_dir)
+    assert [r.run_id for r in study.records] == [good.run_id]
+    (error,) = study.load_errors
+    assert error.line == 2 and "a newer file format" in error.message
+    issues = [i for i in validate_study(study).issues if i.code == "unreadable_line"]
+    assert len(issues) == 1 and "Update model-behavior-lab" in issues[0].message

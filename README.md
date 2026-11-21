@@ -197,6 +197,11 @@ Everything is a local file. There is no database and no server-side component.
   them), and a sensitivity check repeats the per-message assessments without runs that
   showed a notice or a tool. The share of run pairs done in the planned random order is
   measured and reported.
+- **Files state their format.** `experiment.yaml`, `plan.json`, and every record and
+  grade carry `schema_version`. Fields added in later versions are left out while unset,
+  so a study that does not use them stays readable by earlier versions. A version that
+  meets a newer `schema_version`, or a field or scoring method it does not know, refuses
+  that file or line and says to update (or to check the spelling) instead of guessing.
 - **The plan stays once data exists.** After the first record, `mblab plan --force`
   refuses to replace `plan.json`. Each record keeps the hash of the `experiment.yaml` it
   was collected under, and reports list what changed since planning.

@@ -100,6 +100,10 @@ list every one you use: `uv sync --extra dashboard --extra api`.
 model-behavior-lab is not published on PyPI. Install it from this repository as shown
 (or `pip install "git+https://github.com/cynkai/model-behavior-lab"`), never with
 `pip install model-behavior-lab`: a package of that name on PyPI would not be this project.
+To install a release instead of the latest commit, add its tag — the current release is
+`pip install "git+https://github.com/cynkai/model-behavior-lab@v0.2.0"` (see
+[CHANGELOG.md](CHANGELOG.md)). A report's *Reproduction* section names the exact commit
+that made it.
 
 ### 1. Try it on synthetic demo data
 

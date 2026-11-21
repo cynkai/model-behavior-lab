@@ -112,6 +112,20 @@ generation time and the code version matches the submitted report. `mblab report
 `--check` never replaces an existing report with different content unless `--force` is
 given.
 
+## Releasing
+
+Every pull request that changes behaviour adds its entry under `## Unreleased` in
+`CHANGELOG.md`. Between releases every commit carries the last release's version number;
+reports tell them apart by commit. To release:
+
+1. Raise `version` in `pyproject.toml` and `__version__` in `src/mblab/__init__.py`
+   (before 1.0, a minor version for anything that can change a report's numbers or refuse
+   a file that loaded before), run `uv lock`, rename `## Unreleased` to
+   `## X.Y.Z — YYYY-MM-DD`, and update the release tag in both READMEs' install notes.
+   `tests/test_release.py` checks that these agree.
+2. After the pull request is merged, tag the merge commit `vX.Y.Z` and publish a GitHub
+   release whose notes are that version's changelog section.
+
 ## Pull request checklist
 
 - [ ] `uv run pytest -q` passes

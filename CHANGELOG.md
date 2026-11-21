@@ -1,6 +1,18 @@
 # Changelog
 
-## Unreleased
+## 0.2.0 — 2026-11-22
+
+First tagged release. Every commit before it said "0.1.0", a version that was never
+tagged, so a report made before this release cannot be traced to its code; reports now
+name their commit.
+
+Upgrading from 0.1.0: studies load unchanged (same files, same definition hashes), but
+analysing them now uses the methods below — equivalence margins, task-standardized
+comparisons, confounder checks — so their reports differ from reports made with 0.1.0
+(`mblab report --check` shows where). Start a new study from the 0.2.0 templates to use
+the new scoring rules and pre-registered analysis settings; their definition hashes
+differ from 0.1.0's. `mblab report` no longer overwrites a report with different content
+(use `--out` or `--force`), and `mblab plan --force` is refused once runs are recorded.
 
 ### Held API runs and result submissions
 
@@ -201,6 +213,8 @@
   (`pilot: true`, labelled PILOT in reports, CLI, and dashboard) to rehearse the protocol,
   and `mblab labels` lists displayed labels verbatim so `observed_label_aliases` can be
   settled before the main study is planned.
+
+### Billed API responses
 
 - `mblab run-api` no longer loses or re-buys billed responses: responses that cannot be
   recorded are logged in `api-unrecorded.jsonl` and held back (`--resend-unrecorded`),

@@ -82,7 +82,10 @@ mblab --version
 model-behavior-lab은 PyPI에 올라가 있지 않습니다. 위처럼 이 저장소에서 설치하거나
 `pip install "git+https://github.com/cynkai/model-behavior-lab"`를 쓰세요.
 `pip install model-behavior-lab`은 쓰지 마세요. PyPI에 그 이름의 패키지가 있더라도 이
-프로젝트가 아닙니다.
+프로젝트가 아닙니다. 최신 커밋 대신 릴리스를 설치하려면 태그를 붙이세요. 현재 릴리스는
+`pip install "git+https://github.com/cynkai/model-behavior-lab@v0.2.0"`입니다
+([CHANGELOG.md](../CHANGELOG.md) 참고). 보고서의 *Reproduction* 절에는 그 보고서를 만든
+정확한 커밋이 적혀 있습니다.
 
 ### 1. 합성 데모 데이터로 체험하기
 

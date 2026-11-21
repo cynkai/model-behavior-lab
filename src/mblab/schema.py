@@ -14,9 +14,14 @@ Design rules
 * Values an official API reports (model id, token usage) live in one optional
   ``api_reported`` object that is only valid for ``official_api`` records. They
   are copied as returned; a value the API did not return stays ``None``.
-* Fields added for ``official_api`` are left out of the serialized form while
-  unset, so the definition hash of a ``manual_ui`` study, and its records, are
-  byte-for-byte what they were before those fields existed.
+* Fields added to a file format later are left out of the serialized form while
+  unset, so a definition that does not use them keeps its hash, and a file that does
+  not use them stays readable by the versions before them (which refuse a field they
+  do not know rather than ignore it). ``tests/test_schema.py`` holds the serialized
+  keys of each file to catch a field that breaks this rule.
+* ``schema_version`` changes only for a change an older version would misread, not
+  for new optional fields. A file that states a newer ``schema_version`` than
+  :data:`SCHEMA_VERSION` is refused with a message that says so.
 """
 
 from __future__ import annotations
@@ -25,7 +30,7 @@ import hashlib
 import json
 import re
 from datetime import date
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, ClassVar, Literal
 
 from pydantic import (
     AwareDatetime,
@@ -36,7 +41,11 @@ from pydantic import (
     model_serializer,
     model_validator,
 )
+from pydantic_core import PydanticCustomError
 
+from mblab import __version__
+
+#: The newest file format (``schema_version``) this version reads and writes.
 SCHEMA_VERSION = 1
 
 ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_.-]*$"
@@ -88,6 +97,32 @@ DEFAULT_NORMALIZE: list[str] = [
 
 class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
+
+
+class VersionedModel(StrictModel):
+    """A file, or one line of a file, that states its format in ``schema_version``."""
+
+    #: Reported when a file of this kind is refused ("this record").
+    file_kind: ClassVar[str] = "this file"
+
+    @model_validator(mode="before")
+    @classmethod
+    def _refuse_newer_format(cls, data: Any) -> Any:
+        version = data.get("schema_version") if isinstance(data, dict) else None
+        if type(version) is int and version > SCHEMA_VERSION:
+            raise PydanticCustomError(
+                "newer_format",
+                "{kind} has schema_version {version}, a newer file format than "
+                "model-behavior-lab {mine} reads (up to {newest}). Update model-behavior-lab "
+                "to read it",
+                {
+                    "kind": cls.file_kind,
+                    "version": version,
+                    "mine": __version__,
+                    "newest": SCHEMA_VERSION,
+                },
+            )
+        return data
 
 
 def normalize_label(text: str) -> str:
@@ -421,7 +456,8 @@ class AnalysisPlan(StrictModel):
     )
 
 
-class ExperimentDefinition(StrictModel):
+class ExperimentDefinition(VersionedModel):
+    file_kind: ClassVar[str] = "this definition"
     schema_version: Literal[1] = 1
     experiment_id: Identifier
     experiment_version: str = Field(pattern=r"^\d+\.\d+\.\d+([.-][A-Za-z0-9.-]+)?$")
@@ -621,7 +657,8 @@ class PlannedRun(StrictModel):
     repetition: int = Field(ge=1)
 
 
-class RunPlan(StrictModel):
+class RunPlan(VersionedModel):
+    file_kind: ClassVar[str] = "this plan"
     schema_version: Literal[1] = 1
     experiment_id: str
     experiment_version: str
@@ -669,6 +706,12 @@ class ApiReported(StrictModel):
     reasoning_tokens: int | None = Field(default=None, ge=0)
     total_tokens: int | None = Field(default=None, ge=0)
 
+    @model_serializer(mode="wrap")
+    def _serialize(self, handler: Any) -> dict[str, Any]:
+        # Only what the API returned is written, so a value added later (`refusal`) does
+        # not make versions before it refuse every API record.
+        return {k: v for k, v in handler(self).items() if v is not None}
+
 
 #: Fields that describe what a client UI displayed; an API record has none of them.
 CLIENT_DISPLAY_FIELDS = (
@@ -679,9 +722,10 @@ CLIENT_DISPLAY_FIELDS = (
 )
 
 
-class RunRecord(StrictModel):
+class RunRecord(VersionedModel):
     """One observed run. Only what the experimenter saw or measured, or the API returned."""
 
+    file_kind: ClassVar[str] = "this record"
     schema_version: Literal[1] = 1
 
     # Identity and condition — copied from the plan and checked against it.
@@ -800,7 +844,8 @@ class RunRecord(StrictModel):
         return self.protocol_deviation is not None
 
 
-class ManualGrade(StrictModel):
+class ManualGrade(VersionedModel):
+    file_kind: ClassVar[str] = "this grade"
     schema_version: Literal[1] = 1
     run_id: str = Field(min_length=1)
     points: float = Field(ge=0, allow_inf_nan=False)

@@ -72,7 +72,12 @@ docs/            # methodology, protocol, Korean README
 6. **Writes go through the storage helpers.** Take `write_lock`, read the file again
    inside it, and add or replace records with `merge_records` / `append_jsonl`. Never
    rewrite a JSON-lines file from a parsed copy: lines that do not parse must survive.
-7. **Small, focused pull requests**, with a description of what changed and how you
+7. **File formats stay readable.** A new optional field in a definition, plan, record,
+   or grade is left out of the serialized form while unset (see the design rules in
+   `schema.py`), so files that do not use it keep their hash and stay readable by
+   earlier versions; `tests/test_schema.py` pins the serialized keys. A change that an
+   earlier version would misread instead raises `SCHEMA_VERSION`.
+8. **Small, focused pull requests**, with a description of what changed and how you
    checked it.
 
 ## Adding things

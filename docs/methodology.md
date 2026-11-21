@@ -274,6 +274,15 @@ such lines byte for byte, and keep the previous file as `.bak`, instead of dropp
 they cannot parse. All writes happen under one study-wide lock, after reading the files
 again, so concurrent commands cannot lose or duplicate a run.
 
+**File formats.** `experiment.yaml`, `plan.json`, and each record and grade state their
+format in `schema_version` (format 1 so far). Optional fields added by later versions are
+left out of a file while unset, so a definition that does not use them keeps its hash and
+a study that does not use them stays readable by earlier versions; earlier versions
+refuse a field they do not know rather than ignore it. A version that reads a newer
+`schema_version` refuses the file (or, in `records.jsonl` and `grades.jsonl`, reports the
+line and keeps it untouched) with a message that says to update; an unknown field or
+scoring method is reported with the same advice, or to check the spelling.
+
 **Checking a shared report.** The report's *Reproduction* section gives the SHA-256 of
 every file it was made from (including `api-unrecorded.jsonl` in official-API studies,
 whose billed-but-unrecorded responses are counted among the limitations), the version

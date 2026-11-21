@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### File formats
+
+- A definition, plan, record, or grade whose `schema_version` is newer than this version
+  reads is refused with a message saying so and asking to update (a record or grade line
+  is reported and kept, like any unreadable line). Before, the message was
+  `schema_version: Input should be 1`.
+- An unknown field or scoring method is reported with a hint to check the spelling, or to
+  update if a newer version wrote the file.
+- API records leave out the values the API did not return. Before, every API record
+  carried `"refusal": null`, which versions before `refusal` existed could not read.
+  Tests pin the serialized keys of each file, so a field added later has to be left out
+  while unset (or raise the format number). No format number changes in this release:
+  every change since the first one adds optional fields, which earlier versions refuse as
+  unknown rather than misread.
+
 ### Reports you can check
 
 - Reports name the code that made them: the version and the git commit, read from the

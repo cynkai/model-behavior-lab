@@ -38,6 +38,7 @@ from typing import Any, TypeVar
 import yaml
 from pydantic import BaseModel, ValidationError
 
+from mblab import __version__
 from mblab.schema import ExperimentDefinition, ManualGrade, RunPlan, RunRecord
 
 DEFINITION_FILE = "experiment.yaml"
@@ -68,13 +69,27 @@ class LineError:
     message: str
 
 
+#: Pydantic error types for a field or a value (a scoring method, say) this version does not know.
+UNKNOWN_ERRORS = frozenset({"extra_forbidden", "union_tag_invalid"})
+
+
 def format_validation_error(exc: ValidationError) -> str:
     parts = []
+    unknown = False
     for err in exc.errors():
+        if err["type"] == "newer_format":
+            return err["msg"]  # the one thing to fix: every other error follows from it
+        unknown = unknown or err["type"] in UNKNOWN_ERRORS
         loc = ".".join(str(p) for p in err["loc"]) or "(root)"
         msg = err["msg"].removeprefix("Value error, ")
         parts.append(f"{loc}: {msg}")
-    return "; ".join(parts)
+    text = "; ".join(parts)
+    if unknown:
+        text += (
+            f" (not known to model-behavior-lab {__version__}: check the spelling, or update "
+            "model-behavior-lab if a newer version wrote this file)"
+        )
+    return text
 
 
 def atomic_write_bytes(path: Path, data: bytes) -> None:

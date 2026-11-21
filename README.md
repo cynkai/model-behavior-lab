@@ -156,7 +156,7 @@ Every command takes `--study/-s DIR` (default: the current directory, or `$MBLAB
 | `mblab grade export` / `mblab grade import SHEET` | Blind grading sheet without condition information, and importing the points |
 | `mblab analyze [--json FILE]` | Score responses and summarise per condition, with uncertainty |
 | `mblab export [--format csv\|json]` | One row per recorded run, with its score |
-| `mblab report` | Markdown report (`reports/report.md`) |
+| `mblab report` | Markdown report (`reports/report.md`); never replaces a report with different content unless `--force`, and `--check FILE` compares an existing report with a fresh one instead of writing |
 | `mblab dashboard` | Local web dashboard (needs the `dashboard` extra) |
 | `mblab demo DIR` | Create a synthetic demo study |
 
@@ -389,9 +389,10 @@ The full write-up is [docs/methodology.md](docs/methodology.md).
 
 Bug reports, task proposals, documentation fixes, and independent replications are
 welcome — see [CONTRIBUTING.md](CONTRIBUTING.md). To share results, share the whole
-study directory (after the privacy check) so others can run `mblab validate` and
-`mblab report` and get the same numbers; the *Result submission* issue template lists
-what to include.
+study directory (after the privacy check) so others can check the report: its
+*Reproduction* section names the commit of the code that made it, and
+`mblab report --check` makes the report again and compares it without writing anything.
+The *Result submission* issue templates list what to include.
 
 ## Roadmap
 

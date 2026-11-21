@@ -158,6 +158,8 @@ def test_overriding_a_setting_labels_the_analysis_exploratory(study_dir, definit
     text = (study_dir / "reports" / "report.md").read_text(encoding="utf-8")
     assert "**NOT THE PRE-REGISTERED ANALYSIS:** confidence 0.9 instead of 0.95" in text
     assert "so this is an exploratory analysis, not the pre-registered one" in text
-    plain = runner.invoke(app, ["report", "-s", str(study_dir)], env=env)
+    # The reproduction commands repeat the option, so a reviewer makes the same report.
+    assert "mblab report -s <study-dir> --confidence 0.9 --check <this-report.md>" in text
+    plain = runner.invoke(app, ["report", "-s", str(study_dir), "--force"], env=env)
     assert plain.exit_code == 0 and "pre-registered analysis" not in plain.output
     assert "NOT THE PRE-REGISTERED" not in (study_dir / "reports" / "report.md").read_text()

@@ -144,8 +144,10 @@ statement about which model ran on the server.
 1. Run `mblab validate` and resolve every `possible_personal_data` warning. Read the
    response texts yourself as well; the scan is a safety net, not a guarantee.
 2. Share the whole study directory: `experiment.yaml`, `plan.json`, `records.jsonl`,
-   `grades.jsonl` (if any), and `reports/report.md`. With these, anyone can rerun
-   `mblab validate` and `mblab report` and get the same numbers.
+   `grades.jsonl` (if any), and `reports/report.md`. With these, anyone can install the
+   code named in the report's *Reproduction* section and run
+   `mblab report -s <study> --check reports/report.md`, which makes the report again and
+   compares it with yours without writing anything.
 3. Open a *Result submission* issue in the repository with the definition hash, the
    platform, the client version(s), and the dates. Do not include account identifiers.
 

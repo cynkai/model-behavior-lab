@@ -7,13 +7,15 @@ Interpretive sentences come from the templates in :mod:`mblab.analysis`.
 
 from __future__ import annotations
 
+import difflib
 import hashlib
+import re
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
 
-from mblab import __version__
 from mblab.analysis import LABEL_CLASS_TEXT, LABEL_CLASSES, Analysis, hypothesis_tallies
 from mblab.demo import DEMO_BANNER
 from mblab.formatting import (
@@ -31,7 +33,9 @@ from mblab.formatting import (
     tokens,
 )
 from mblab.pilot import PILOT_BANNER
+from mblab.provenance import CodeVersion, code_version
 from mblab.schema import (
+    AnalysisPlan,
     DateScoring,
     ExactMatchScoring,
     ManualScoring,
@@ -40,7 +44,7 @@ from mblab.schema import (
     SequenceScoring,
 )
 from mblab.stats import Interval
-from mblab.study import GRADES_FILE, RECORDS_FILE, Study
+from mblab.study import GRADES_FILE, RECORDS_FILE, UNRECORDED_FILE, Study
 
 SCOPE_NOTE = (
     "**Scope of claims.** This report describes what the client displayed and how the "
@@ -119,7 +123,7 @@ def _interval(row: object) -> Interval | None:
 # -- sections --------------------------------------------------------------------------------
 
 
-def _header(a: Analysis, study: Study, now: datetime) -> list[str]:
+def _header(a: Analysis, now: datetime, code: CodeVersion) -> list[str]:
     d = a.definition
     planned = len(a.plan.runs) if a.plan else 0
     origin = "synthetic demo data" if a.synthetic else "observed by the experimenter"
@@ -154,7 +158,7 @@ def _header(a: Analysis, study: Study, now: datetime) -> list[str]:
                 ["Definition SHA-256", f"`{d.sha256()}`"],
                 [
                     "Generated",
-                    f"{now.isoformat(timespec='seconds')} by model-behavior-lab {__version__}",
+                    f"{now.isoformat(timespec='seconds')} by model-behavior-lab {code.label()}",
                 ],
                 ["Data", f"{len(a.results)} recorded of {planned} planned runs ({origin})"],
             ],
@@ -776,31 +780,101 @@ def _claims(a: Analysis) -> list[str]:
     ]
 
 
-def _reproduction(a: Analysis, study: Study) -> list[str]:
+#: Table row naming the code that made the report (ignored by ``mblab report --check``).
+CODE_ROW = "Report made with"
+
+
+def _code_cell(code: CodeVersion) -> str:
+    text = f"model-behavior-lab {code.version}"
+    if code.commit is None:
+        return text + ", commit not recorded"
+    text += f", commit `{code.commit}`"
+    return text + " with uncommitted changes in `src/mblab`" if code.modified else text
+
+
+def _code_note(code: CodeVersion) -> str:
+    if code.commit is None:
+        return (
+            "**Code.** The commit of the code that made this report is not recorded (it ran "
+            "neither from a git checkout nor from a git install), so the command installs "
+            f"`v{code.version}`, the release with the same version number. A copy built from "
+            "another commit can differ."
+        )
+    if code.modified:
+        return (
+            "**Code.** This report was made from a working copy with uncommitted changes in "
+            "`src/mblab`, so its exact code cannot be installed. The command installs commit "
+            f"`{code.commit[:12]}`, the commit those changes were made on."
+        )
+    return f"**Code.** The command installs commit `{code.commit[:12]}`, the code that made this report."
+
+
+def _options(a: Analysis) -> tuple[str, list[str]]:
+    """Options that repeat this report's analysis settings, and settings no option sets."""
+    pre = a.definition.analysis or AnalysisPlan()
+    s = a.settings
+    flags = []
+    if s.confidence != pre.confidence:
+        flags.append(f" --confidence {s.confidence:g}")
+    if s.min_n != pre.min_n:
+        flags.append(f" --min-n {s.min_n}")
+    unset = []
+    if s.equivalence_fraction != pre.equivalence_fraction:
+        unset.append(
+            f"The equivalence fraction {s.equivalence_fraction:g} was set outside the command "
+            f"line (pre-registered: {pre.equivalence_fraction:g}); the commands below use the "
+            "pre-registered value."
+        )
+    return "".join(flags), unset
+
+
+def _reproduction(a: Analysis, study: Study, code: CodeVersion) -> list[str]:
     plan = a.plan
+    api = _is_api(a)
     rows = [
         ["experiment.yaml (parsed) SHA-256", f"`{a.definition.sha256()}`"],
         ["plan.json definition hash", f"`{plan.definition_sha256}`" if plan else "—"],
         ["records.jsonl SHA-256", f"`{_sha256_file(study.root / RECORDS_FILE) or '—'}`"],
         ["grades.jsonl SHA-256", f"`{_sha256_file(study.root / GRADES_FILE) or '—'}`"],
-        ["Plan seed / strategy", f"{plan.seed} / `{plan.strategy}`" if plan else "—"],
-        ["Tool version", f"model-behavior-lab {__version__}"],
     ]
+    files = "`experiment.yaml`, `plan.json`, `records.jsonl`, `grades.jsonl` if present"
+    if api:
+        # Billed responses that could not be recorded are counted among the limitations.
+        rows.append(
+            [
+                f"{UNRECORDED_FILE} SHA-256",
+                f"`{_sha256_file(study.root / UNRECORDED_FILE) or '—'}`",
+            ]
+        )
+        files += f", and `{UNRECORDED_FILE}` if present"
+    else:
+        files = files.replace(", `grades.jsonl`", ", and `grades.jsonl`")
+    rows += [
+        ["Plan seed / strategy", f"{plan.seed} / `{plan.strategy}`" if plan else "—"],
+        ["Plan made with", f"model-behavior-lab {plan.tool_version}" if plan else "—"],
+        [CODE_ROW, _code_cell(code)],
+    ]
+    flags, unset = _options(a)
     return [
         "## 10. Reproduction",
         "",
         md_table(["Item", "Value"], rows),
         "",
-        "With the study directory (`experiment.yaml`, `plan.json`, `records.jsonl`, and "
-        "`grades.jsonl` if present):",
+        f"To check this report, take the study directory ({files}), install the code that made "
+        "it, and run the commands below. `--check` makes the report again and compares it with "
+        "this file without writing anything. It ignores only the generation time and the lines "
+        "naming the code, so every number and hash above has to match.",
         "",
         "```bash",
-        'pip install "git+https://github.com/cynkai/model-behavior-lab"',
+        code.install_command(),
         "mblab validate -s <study-dir>",
-        "mblab analyze -s <study-dir>",
-        "mblab report -s <study-dir>",
+        f"mblab analyze -s <study-dir>{flags}",
+        f"mblab report -s <study-dir>{flags} --check <this-report.md>",
         "```",
         "",
+        _code_note(code),
+        "",
+        *[line for text in unset for line in (text, "")],
         (
             "To run the experiment again: `mblab init --template openai-reasoning-effort`, copy "
             "the same `experiment.yaml`, then `mblab plan` (same seed → same order) and "
@@ -840,10 +914,13 @@ def _appendix(a: Analysis) -> list[str]:
     return out
 
 
-def render_report(a: Analysis, study: Study, now: datetime | None = None) -> str:
+def render_report(
+    a: Analysis, study: Study, now: datetime | None = None, code: CodeVersion | None = None
+) -> str:
     now = now or datetime.now().astimezone()
+    code = code or code_version()
     parts = (
-        _header(a, study, now)
+        _header(a, now, code)
         + _research_and_hypotheses(a)
         + _environment(a)
         + _conditions(a)
@@ -852,9 +929,68 @@ def render_report(a: Analysis, study: Study, now: datetime | None = None) -> str
         + _interpretation(a)
         + _limitations(a)
         + _claims(a)
-        + _reproduction(a, study)
+        + _reproduction(a, study, code)
         + _appendix(a)
     )
     if a.synthetic:
         parts += ["---", "", f"**{DEMO_BANNER}**", ""]
     return "\n".join(parts).rstrip() + "\n"
+
+
+# -- checking a report against the data ------------------------------------------------------
+
+#: Lines that differ between two runs of the same analysis on the same data — when the
+#: report was made and which copy of the code made it. ``mblab report --check`` ignores them.
+_VOLATILE = (
+    (re.compile(r"^\| Generated \| .* \|$"), "| Generated | … |"),
+    (re.compile(rf"^\| ({CODE_ROW}|Tool version) \| .* \|$"), r"| \1 | … |"),
+    (
+        re.compile(r'^pip install "git\+https://github\.com/cynkai/model-behavior-lab[^"]*"$'),
+        "pip install …",
+    ),
+    (re.compile(r"^\*\*Code\.\*\* .*$"), "**Code.** …"),
+)
+_MADE_WITH = re.compile(r"^\| Generated \| .* by model-behavior-lab (.+?) \|$", re.MULTILINE)
+_NOT_PREREGISTERED = "> **NOT THE PRE-REGISTERED ANALYSIS:**"
+
+
+def _normalized(text: str) -> list[str]:
+    lines = text.replace("\r\n", "\n").split("\n")
+    for pattern, placeholder in _VOLATILE:
+        lines = [pattern.sub(placeholder, line) for line in lines]
+    return lines
+
+
+@dataclass(frozen=True)
+class ReportComparison:
+    """An existing report compared with one made now from the same study."""
+
+    #: Unified diff of the two reports, without the lines that are expected to differ.
+    diff: list[str]
+    #: Lines removed or added (0 when the reports agree).
+    changed_lines: int
+    #: The code version named in the existing report ("0.2.0 (commit …)"), if it names one.
+    made_with: str | None
+    #: Exactly one of the two reports uses settings other than the pre-registered ones.
+    settings_differ: bool
+
+    @property
+    def same(self) -> bool:
+        return self.changed_lines == 0
+
+
+def compare_reports(existing: str, new: str) -> ReportComparison:
+    old_lines, new_lines = _normalized(existing), _normalized(new)
+    diff = list(
+        difflib.unified_diff(old_lines, new_lines, "existing report", "made now", lineterm="")
+    )
+    changed = sum(
+        1 for line in diff[2:] if line[:1] in {"+", "-"} and not line.startswith(("+++", "---"))
+    )
+    match = _MADE_WITH.search(existing)
+    return ReportComparison(
+        diff=diff,
+        changed_lines=changed,
+        made_with=match.group(1) if match else None,
+        settings_differ=(_NOT_PREREGISTERED in existing) != (_NOT_PREREGISTERED in new),
+    )

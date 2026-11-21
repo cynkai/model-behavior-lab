@@ -139,7 +139,7 @@ mblab report -s my-study
 | `mblab grade export` / `mblab grade import SHEET` | 조건 정보를 뺀 블라인드 채점지 생성과 점수 가져오기 |
 | `mblab analyze [--json FILE]` | 응답 채점 후 조건별 요약(불확실성 포함) |
 | `mblab export [--format csv\|json]` | 기록된 실행마다 한 행, 점수 포함 |
-| `mblab report` | Markdown 보고서(`reports/report.md`) |
+| `mblab report` | Markdown 보고서(`reports/report.md`). 내용이 다른 기존 보고서는 `--force` 없이 덮어쓰지 않고, `--check FILE`은 파일을 쓰지 않고 기존 보고서와 새로 만든 보고서를 비교 |
 | `mblab dashboard` | 로컬 웹 대시보드(`dashboard` 추가 설치 필요) |
 | `mblab demo DIR` | 합성 데모 실험 생성 |
 
@@ -342,8 +342,9 @@ Streamlit 사용 통계 전송은 끈 상태로 시작합니다. 화면 구성:
 
 버그 제보, 문제 제안, 문서 수정, 독립적인 재현 실험을 환영합니다 —
 [CONTRIBUTING.md](../CONTRIBUTING.md)(영문)를 참고하세요. 결과를 공유할 때는 개인정보 점검
-후 실험 디렉터리 전체를 공유해 주세요. 그래야 다른 사람이 `mblab validate`와 `mblab report`로
-같은 숫자를 얻을 수 있습니다. *Result submission* 이슈 템플릿에 포함할 항목이 있습니다.
+후 실험 디렉터리 전체를 공유해 주세요. 보고서의 *Reproduction* 절에 보고서를 만든 코드의
+커밋이 적혀 있고, `mblab report --check`는 아무 파일도 쓰지 않고 보고서를 다시 만들어
+비교합니다. *Result submission* 이슈 템플릿에 포함할 항목이 있습니다.
 
 ## 로드맵
 

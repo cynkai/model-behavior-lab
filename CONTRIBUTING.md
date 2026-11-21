@@ -40,7 +40,8 @@ src/mblab/
   api_runner.py  # official-API runner (OpenAI Responses API)
   stats.py       # Wilson, Newcombe, bootstrap
   analysis.py    # summaries, override assessment, limitations, claims
-  report.py      # Markdown report
+  report.py      # Markdown report, and comparing a report with a fresh one
+  provenance.py  # which code is running: version and git commit
   grading.py     # blind grading sheets
   demo.py        # synthetic demo study
   cli.py         # the `mblab` command
@@ -92,12 +93,18 @@ docs/            # methodology, protocol, Korean README
 1. `mblab validate -s <study>` — resolve errors and every `possible_personal_data`
    warning, and read the responses yourself.
 2. Share the study directory: `experiment.yaml`, `plan.json`, `records.jsonl`,
-   `grades.jsonl` (if any), `reports/report.md`.
-3. Open a *Result submission* issue with the definition hash, platform, client
-   version(s), and dates. Do not include account details or personal data.
+   `grades.jsonl` (if any), `api-unrecorded.jsonl` (official-API studies, if any), and
+   `reports/report.md`. The report's *Reproduction* section lists the hash of each file.
+3. Open a *Result submission* issue with the definition hash, the code version from the
+   report, the platform or model, and the dates. Do not include account details or
+   personal data.
 
-Reviewers rerun `mblab validate` and `mblab report` on the shared directory; the numbers
-should match the submitted report exactly.
+Reviewers install the code named in the report's *Reproduction* section and run the
+commands listed there, ending with `mblab report -s <study> --check <report.md>`. It makes
+the report again, writes nothing, and exits with status 1 unless everything except the
+generation time and the code version matches the submitted report. `mblab report` without
+`--check` never replaces an existing report with different content unless `--force` is
+given.
 
 ## Pull request checklist
 

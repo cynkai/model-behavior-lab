@@ -36,6 +36,7 @@ from mblab.schema import ApiReported, ExperimentDefinition, PlannedRun, RunPlan,
 from mblab.study import (
     LOCK_FILE,
     UNRECORDED_FILE,
+    LineError,
     Study,
     StudyError,
     append_json_object,
@@ -130,6 +131,53 @@ def read_unrecorded(root: Path) -> list[dict[str, Any]]:
 def unrecorded_run_ids(root: Path, recorded: set[str]) -> set[str]:
     """Runs with a billed-but-unrecorded response and still no record."""
     return {e["run_id"] for e in read_unrecorded(root) if e.get("run_id") not in recorded}
+
+
+@dataclass(frozen=True)
+class HeldRuns:
+    """Planned runs that `run-api` holds back, for showing them (status, next, dashboard).
+
+    A run is held while the unrecorded log lists a billed response for it and it has no
+    record. Unlike :func:`read_unrecorded`, reading never fails: unreadable lines are
+    returned, and `run-api` sends nothing until they are fixed.
+    """
+
+    runs: list[PlannedRun] = field(default_factory=list)
+    log_errors: list[LineError] = field(default_factory=list)
+
+    @property
+    def run_ids(self) -> frozenset[str]:
+        return frozenset(r.run_id for r in self.runs)
+
+    def describe(self) -> str:
+        ids = ", ".join(r.run_id for r in self.runs)
+        return (
+            f"{len(self.runs)} run(s) held back: a billed response arrived but could not be "
+            f"recorded (listed in {UNRECORDED_FILE}): {ids}. `mblab run-api` skips them; "
+            "with --resend-unrecorded it sends them again, and they are billed again."
+        )
+
+    def describe_log_errors(self) -> str:
+        lines = ", ".join(str(e.line) for e in self.log_errors)
+        return (
+            f"{UNRECORDED_FILE} has unreadable line(s) ({lines}). They may list billed runs, "
+            "so `mblab run-api` sends nothing until they are fixed."
+        )
+
+
+def held_runs(study: Study) -> HeldRuns:
+    if study.definition.execution_method != "official_api" or study.plan is None:
+        return HeldRuns()
+    entries, errors = read_unrecorded_log(study.root)
+    ids = {e["run_id"] for e in entries} - study.recorded_run_ids()
+    runs = [r for r in sorted(study.plan.runs, key=lambda r: r.sequence) if r.run_id in ids]
+    return HeldRuns(runs, errors)
+
+
+def next_to_send(study: Study, held: HeldRuns) -> PlannedRun | None:
+    """The run `mblab run-api` sends next (without --resend-unrecorded)."""
+    pending = pending_runs(study.require_plan(), study.recorded_run_ids(), 1, held.run_ids)
+    return pending[0] if pending else None
 
 
 def _log_unrecorded(root: Path, run: PlannedRun, response: Any, reason: str) -> None:

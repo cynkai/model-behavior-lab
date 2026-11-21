@@ -806,3 +806,59 @@ def test_api_studies_take_no_manual_entry(api_study, fake, tmp_path):
     )
     result = import_file(study, typed)
     assert result.records == [] and "come from `mblab run-api`" in result.errors[0]
+
+
+# -- held runs in status, next, and the dashboard ------------------------------------------
+
+
+def _cli(*args: object):
+    return CliRunner().invoke(app, [str(a) for a in args], env={"COLUMNS": "200", "NO_COLOR": "1"})
+
+
+def test_status_and_next_point_where_run_api_goes(api_study, fake):
+    fake.client.script = [make_response(status="in_progress")]
+    _send(api_study, fake, limit=1)  # billed, not recordable: held back
+    study = Study.load(api_study)
+    held = api_runner.held_runs(study)
+    plan = study.require_plan()
+    (first,) = held.runs
+    goes_next = api_runner.pending_runs(plan, study.recorded_run_ids(), 1, held.run_ids)[0]
+    assert goes_next.sequence == 2 and api_runner.next_to_send(study, held) == goes_next
+
+    status = _cli("status", "-s", api_study)
+    assert status.exit_code == 0, status.output
+    assert (
+        "Held back: 1 run(s) held back: a billed response arrived but could not be recorded"
+        in status.output
+    )
+    assert first.run_id in status.output and "--resend-unrecorded" in status.output
+    assert f"Next run: #2 {goes_next.run_id} — send it with mblab run-api" in status.output
+    assert "held" in status.output.splitlines()[2]  # the table's header has a held column
+
+    nxt = _cli("next", "-s", api_study)
+    assert nxt.exit_code == 0, nxt.output
+    assert f"Run {goes_next.run_id}  (#2 of 54" in nxt.output and "Held back" in nxt.output
+
+
+def test_status_says_when_only_held_runs_are_left(api_study, fake):
+    fake.client.script = [make_response(status="in_progress")]
+    _send(api_study, fake, limit=1)
+    _send(api_study, fake)  # every other run is recorded
+    assert len(Study.load(api_study).records) == 53
+    for command in ("status", "next"):
+        result = _cli(command, "-s", api_study)
+        assert result.exit_code == 0, result.output
+        assert (
+            "No run is left to send: every planned run without a record is held back"
+            in result.output
+        )
+    assert "Nothing to send" not in _cli("status", "-s", api_study).output
+
+
+def test_status_reports_a_damaged_unrecorded_log(api_study, fake):
+    _send(api_study, fake, limit=1)
+    (api_study / api_runner.UNRECORDED_FILE).write_text("{not json\n", encoding="utf-8")
+    result = _cli("status", "-s", api_study)
+    assert result.exit_code == 0, result.output
+    assert "has unreadable line(s) (1)" in result.output and "sends nothing" in result.output
+    assert api_runner.held_runs(Study.load(api_study)).runs == []

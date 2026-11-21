@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+### Held API runs and result submissions
+
+- `mblab status`, `mblab next`, and the dashboard's plan page list the runs `run-api` holds
+  back (a billed response that could not be recorded) and point at the run `run-api`
+  sends next. Before, they pointed at the first unrecorded run, which `run-api` skips. A
+  damaged `api-unrecorded.jsonl` is reported instead of stopping `status`, and the
+  dashboard reloads when the file changes.
+- The README describes held runs and `--resend-unrecorded`, and no longer says that a
+  request that timed out is retried (since the data-integrity fixes it is held back,
+  because it may have been billed).
+- Result submissions have one issue form per execution method. The official-API form no
+  longer asks API submitters to confirm data "collected by hand in the official client";
+  it asks them to confirm that every record came from `mblab run-api` and that no key or
+  account id is shared, and it asks for `api-unrecorded.jsonl`. Both forms ask for the code
+  version and commit from the report, and the `results` label they apply now exists.
+
 ### File formats
 
 - A definition, plan, record, or grade whose `schema_version` is newer than this version

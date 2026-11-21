@@ -1,15 +1,21 @@
-name: Result submission
-description: Share a completed study so others can validate and reproduce it.
+name: Result submission (app, recorded by hand)
+description: Share a completed manual_ui study, collected by hand in an AI app, so others can check it.
+title: "[Results] "
 labels: [results]
 body:
   - type: markdown
     attributes:
       value: |
-        Thank you for running the experiment. Before submitting:
+        Thank you for running the experiment. This form is for `manual_ui` studies (collected by
+        hand in an app). For a study sent with `mblab run-api`, use the *official API* form.
+
+        Before submitting:
         - run `mblab validate` and resolve every `possible_personal_data` warning;
         - read the responses yourself — the scan is a safety net, not a guarantee;
         - do not include account identifiers or personal data.
-        Reviewers will rerun `mblab validate` and `mblab report` on your study directory.
+
+        Reviewers install the code named in your report's *Reproduction* section and run
+        `mblab report --check` on your study directory, which must match your report.
   - type: input
     id: experiment
     attributes:
@@ -22,6 +28,14 @@ body:
     attributes:
       label: Definition SHA-256
       description: Shown by `mblab plan` and at the top of the report.
+    validations:
+      required: true
+  - type: input
+    id: code
+    attributes:
+      label: model-behavior-lab version and commit
+      description: The *Report made with* row of the report's Reproduction section.
+      placeholder: model-behavior-lab 0.2.0, commit 0123456789abcdef…
     validations:
       required: true
   - type: input

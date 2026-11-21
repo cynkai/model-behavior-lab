@@ -26,6 +26,7 @@ import pandas as pd
 import streamlit as st
 from pydantic import ValidationError
 
+from mblab import api_runner
 from mblab.analysis import LABEL_CLASS_TEXT, Analysis, analyze, hypothesis_tallies
 from mblab.dashboard import PAGES, charts
 from mblab.demo import DEMO_BANNER
@@ -50,7 +51,7 @@ from mblab.provenance import code_version
 from mblab.records import build_record, condition_instructions, next_pending, parse_decimal
 from mblab.report import scoring_text
 from mblab.stats import Interval
-from mblab.study import Study, StudyError, format_validation_error
+from mblab.study import UNRECORDED_FILE, Study, StudyError, format_validation_error
 
 SCOPE = (
     "These pages describe what the client displayed and how responses behaved in this sample. "
@@ -67,7 +68,7 @@ def _initial_study_dir() -> str:
 
 
 def _stamp(root: Path) -> tuple:
-    names = ("experiment.yaml", "plan.json", "records.jsonl", "grades.jsonl")
+    names = ("experiment.yaml", "plan.json", "records.jsonl", "grades.jsonl", UNRECORDED_FILE)
     return tuple((n, (root / n).stat().st_mtime_ns if (root / n).exists() else 0) for n in names)
 
 
@@ -206,6 +207,7 @@ def page_record(study: Study, a: Analysis) -> None:
         st.warning("No plan yet. Run `mblab plan -s <study>` first.")
         return
     recorded = {r.run_id: r for r in study.records}
+    held = api_runner.held_runs(study)  # the runs `mblab run-api` skips
     table = pd.DataFrame(
         [
             {
@@ -220,18 +222,27 @@ def page_record(study: Study, a: Analysis) -> None:
                     if run.run_id in recorded and recorded[run.run_id].excluded
                     else "recorded"
                     if run.run_id in recorded
+                    else "held back"
+                    if run.run_id in held.run_ids
                     else "pending"
                 ),
             }
             for run in sorted(a.plan.runs, key=lambda r: r.sequence)
         ]
     )
-    nxt = next_pending(a.plan, set(recorded))
+    if held.log_errors:
+        st.warning(md_text(held.describe_log_errors()))
+    if held.runs:
+        st.warning(md_text(held.describe()))
+    pending_ids = [r for r in table["run"] if r not in recorded and r not in held.run_ids]
     st.subheader("Next run")
-    if nxt is None:
-        st.success("All planned runs are recorded.")
-    pending_ids = [r for r in table["run"] if r not in recorded]
-    choices = pending_ids + [r for r in table["run"] if r in recorded]
+    if not pending_ids:
+        st.success(
+            "All planned runs are recorded."
+            if not held.runs
+            else "No run is left to send: every planned run without a record is held back."
+        )
+    choices = pending_ids + [r for r in table["run"] if r in held.run_ids or r in recorded]
     if not choices:
         return
     # The selection stays put while the page reruns (e.g. when another command saves a

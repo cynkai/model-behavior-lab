@@ -263,3 +263,39 @@ def test_per_run_confounders_are_never_carried_over(monkeypatch, study_dir):
     assert len(Study.load(study_dir).records) == 1
     # The next run's form starts empty again for per-run confounders, not with "none".
     assert sum(1 for box in at.selectbox if box.value is None) == 2
+
+
+def test_held_api_runs_are_shown_where_run_api_skips_them(monkeypatch, tmp_path):
+    from mblab import api_runner
+    from mblab.study import parse_definition
+
+    from .test_api_runner import FakeClient, _fake_module, make_response
+
+    root = tmp_path / "api"
+    root.mkdir()
+    text = template_text("openai-reasoning-effort")
+    (root / "experiment.yaml").write_text(text, encoding="utf-8")
+    save_plan(generate_plan(parse_definition(text), now=FIXED_NOW), root / "plan.json")
+    client = FakeClient(script=[make_response(status="in_progress")])
+    for limit in (1, 2):  # the first response cannot be recorded; the second run is
+        study = Study.load(root)
+        api_runner.send_runs(
+            study,
+            api_runner.pending_runs(
+                study.require_plan(),
+                study.recorded_run_ids(),
+                limit,
+                api_runner.held_runs(study).run_ids,
+            )[-1:],
+            client=client,
+            sdk=_fake_module(client),
+            sleep=lambda s: None,
+        )
+    held_runs = api_runner.held_runs(Study.load(root))
+    (held,) = held_runs.runs
+    at = _goto(_app(monkeypatch, root), "Run plan & recording")
+    assert md_text(held_runs.describe()) in [w.value for w in at.warning]
+    assert "1 run(s) held back" in held_runs.describe() and held.run_id in held_runs.describe()
+    plan_table = at.dataframe[-1].value
+    assert plan_table.set_index("run").loc[held.run_id, "status"] == "held back"
+    assert at.selectbox(key="run-select").value != held.run_id  # the next run to send

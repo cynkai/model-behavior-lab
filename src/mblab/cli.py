@@ -47,7 +47,7 @@ from mblab.plan import generate_plan
 from mblab.provenance import code_version
 from mblab.records import build_record, condition_instructions, next_pending, parse_decimal
 from mblab.report import compare_reports, render_report
-from mblab.schema import PlannedRun, RunRecord
+from mblab.schema import PlannedRun, RunPlan, RunRecord
 from mblab.stats import Interval
 from mblab.study import (
     DEFAULT_TEMPLATE,
@@ -390,10 +390,15 @@ def status(study: StudyOpt = Path(".")) -> None:
         console.print("[bold red]SYNTHETIC DEMO DATA — not real observations[/]")
     if definition.pilot:
         console.print(f"[bold yellow]{PILOT_BANNER}[/]")
+    api = definition.execution_method == "official_api"
+    held = api_runner.held_runs(s)
     recorded = Counter(r.condition_id for r in s.records)
     excluded = Counter(r.condition_id for r in s.records if r.excluded)
+    held_by_condition = Counter(r.condition_id for r in held.runs)
     planned = Counter(r.condition_id for r in plan_.runs)
-    table = Table("condition", "default", "per-message", "recorded", "excluded")
+    table = Table(
+        "condition", "default", "per-message", "recorded", "excluded", *(["held"] if api else [])
+    )
     for cond in definition.conditions:
         table.add_row(
             cond.id,
@@ -401,15 +406,42 @@ def status(study: StudyOpt = Path(".")) -> None:
             definition.option_label(cond.message_override),
             f"{recorded[cond.id]}/{planned[cond.id]}",
             str(excluded[cond.id]),
+            *([str(held_by_condition[cond.id])] if api else []),
         )
     console.print(table)
     console.print(f"Recorded {len(s.records)} of {len(plan_.runs)} planned runs.")
-    nxt = next_pending(plan_, s.recorded_run_ids())
+    _print_held(held)
+    nxt = _next_run(s, held)
     if nxt is None:
-        console.print("All planned runs are recorded.")
+        console.print(_nothing_next(s, plan_))
+    elif api:
+        console.print(
+            f"Next run: #{nxt.sequence} {nxt.run_id} — send it with mblab run-api -s {study} "
+            "(preview: --dry-run)"
+        )
     else:
         console.print(f"Next run: #{nxt.sequence} {nxt.run_id} — mblab next -s {study} --copy")
     _print_validation_summary(validate_study(s))
+
+
+def _print_held(held: api_runner.HeldRuns) -> None:
+    """Runs `run-api` holds back, so `status` and `next` point where `run-api` goes."""
+    if held.log_errors:
+        err_console.print(f"[yellow]warning:[/] {escape(held.describe_log_errors())}")
+    if held.runs:
+        console.print(f"[yellow]Held back:[/] {escape(held.describe())}")
+
+
+def _next_run(s: Study, held: api_runner.HeldRuns) -> PlannedRun | None:
+    if s.definition.execution_method == "official_api":
+        return api_runner.next_to_send(s, held)
+    return next_pending(s.require_plan(), s.recorded_run_ids())
+
+
+def _nothing_next(s: Study, plan_: RunPlan) -> str:
+    if len(s.recorded_run_ids() & {r.run_id for r in plan_.runs}) == len(plan_.runs):
+        return "All planned runs are recorded."
+    return "No run is left to send: every planned run without a record is held back (see above)."
 
 
 @app.command("next")
@@ -421,9 +453,11 @@ def next_run(
     """Show the next pending run: what to set in the client and the exact prompt."""
     s = Study.load(study)
     plan_ = s.require_plan()
-    run = next_pending(plan_, s.recorded_run_ids())
+    held = api_runner.held_runs(s)
+    _print_held(held)
+    run = _next_run(s, held)
     if run is None:
-        console.print("All planned runs are recorded.")
+        console.print(_nothing_next(s, plan_))
         return
     prompt = _show_run(s, run, len(plan_.runs))
     if copy:

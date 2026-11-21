@@ -100,9 +100,10 @@ docs/            # methodology, protocol, Korean README
 2. Share the study directory: `experiment.yaml`, `plan.json`, `records.jsonl`,
    `grades.jsonl` (if any), `api-unrecorded.jsonl` (official-API studies, if any), and
    `reports/report.md`. The report's *Reproduction* section lists the hash of each file.
-3. Open a *Result submission* issue with the definition hash, the code version from the
-   report, the platform or model, and the dates. Do not include account details or
-   personal data.
+3. Open a *Result submission* issue — the *app* form for a study recorded by hand, the
+   *official API* form for one sent with `mblab run-api` — with the definition hash, the
+   code version from the report, the platform or model, and the dates. Do not include
+   account details, API keys, or personal data.
 
 Reviewers install the code named in the report's *Reproduction* section and run the
 commands listed there, ending with `mblab report -s <study> --check <report.md>`. It makes

@@ -11,7 +11,7 @@ body:
     id: version
     attributes:
       label: mblab version
-      description: Output of `mblab --version`
+      description: Output of `mblab --version` (the version and, when known, the git commit)
     validations:
       required: true
   - type: input

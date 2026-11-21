@@ -149,7 +149,7 @@ Every command takes `--study/-s DIR` (default: the current directory, or `$MBLAB
 | `mblab status` | Progress per condition, the next run, a validation summary |
 | `mblab next [--copy]` | Show the next run: what to set in the client and the exact prompt |
 | `mblab record` | Record one run interactively (`--response-file`, `--paste`, `--run-id`, `--replace`) |
-| `mblab run-api` | Send the pending runs of an official-API study through the OpenAI Responses API (`--dry-run`, `--limit N`, `--min-interval`, `--yes`); needs the `api` extra and `OPENAI_API_KEY` |
+| `mblab run-api` | Send the pending runs of an official-API study through the OpenAI Responses API (`--dry-run`, `--limit N`, `--min-interval`, `--yes`, `--resend-unrecorded`); needs the `api` extra and `OPENAI_API_KEY` |
 | `mblab template` | Write a CSV entry template, one row per planned run |
 | `mblab import FILE` | Import a filled CSV, a JSON array, or JSON lines — all rows valid or nothing is imported (`--dry-run`, `--replace`, `--default-tz`) |
 | `mblab validate` | Check definition, plan, records, and grades (`--strict` fails on warnings) |
@@ -277,7 +277,9 @@ mblab report -s api-study
   tool does not estimate cost; reports list token totals per condition so you can price
   them with the provider's current price list. A pre-registered `max_output_tokens` caps
   each request, and a response that reaches it is recorded as *incomplete* and reported.
-  A request that times out may still be billed, and the runner retries it.
+  A request that times out or loses its connection may already be billed, so the runner
+  does not retry it (it holds the run back, see below). Failures to connect at all, rate
+  limits, and server errors are retried.
 - **What is recorded.** The request is fully determined by the plan and the definition
   hash. From each response, the runner copies the model id, status, echoed effort,
   service tier, incomplete reason, and token usage (including reasoning tokens) into
@@ -288,6 +290,15 @@ mblab report -s api-study
   (`--min-interval`, default 1 s), and run in plan order. Each record is saved as soon as
   its response arrives; errors write nothing, so re-running resumes where it stopped.
   `run-api` refuses to send if `experiment.yaml` changed after the plan.
+- **Held runs.** A request that may have been billed without giving a record (a timeout
+  or dropped connection after it was sent, or a response that cannot be turned into a
+  record, such as one with an unexpected status) is logged in `api-unrecorded.jsonl`
+  with its id and token counts, never its text, and its run is *held back*: `run-api`
+  skips it so it is not paid for twice. `mblab status`, `mblab next`, and the dashboard
+  list held runs and point at the run `run-api` sends next.
+  `mblab run-api --resend-unrecorded` sends held runs again (billed again); the report
+  counts the held responses among its limitations. Share `api-unrecorded.jsonl` with the
+  study.
 - **UI vs. API.** A study uses one execution method. API results describe API access
   with this account and model id — not the ChatGPT app — and are compared with UI
   studies side by side, never pooled.

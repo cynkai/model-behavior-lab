@@ -1,5 +1,28 @@
 # Changelog
 
+## Unreleased
+
+### Benchmark 01: the first observed results
+
+- `benchmarks/benchmark-001-constraint-reasoning/`: one constraint-reasoning task, six
+  conditions (default and per-message selections), one run each, recorded by hand in the
+  ChatGPT tablet app on 2026-11-22. The runs hold the experimenter's structured
+  summaries; the full response texts were not kept, and unrecorded values are null.
+  Report: *Benchmark 01: ChatGPT Model Selection Override — Preliminary Results*.
+- `mblab.task_ordering` computes the ground truth on its own (all 40,320 orders: 23 valid,
+  first `ACBDEFGH`) and the intermediate counts a solution may report, so each wrong
+  count is traced to where it went wrong. Rule 8 of the puzzle turns out to be implied by
+  the others.
+- `mblab benchmark show DIR` scores every run against that ground truth (4 fully correct,
+  2 with a wrong count); `mblab benchmark report DIR [--check]` writes or compares the
+  reports `benchmark.yaml` lists. Each report covers named batches, so later runs add a
+  report instead of changing this one.
+- `mblab dashboard -s DIR` opens a benchmark page for a benchmark directory: results by
+  run, the counts given against the verified count, the default × per-message grid, the
+  comparisons, and the error analysis.
+- The condition checks of experiment definitions (`schema.condition_problems`) are shared
+  with benchmark definitions.
+
 ## 0.2.0 — 2026-11-22
 
 First tagged release. Every commit before it said "0.1.0", a version that was never

@@ -23,6 +23,16 @@ from rich.table import Table
 
 from mblab import api_runner, install_hint
 from mblab.analysis import LABEL_CLASSES, Analysis, AnalysisSettings, analyze
+from mblab.benchmark import (
+    BENCHMARK_FILE,
+    Benchmark,
+    evaluate,
+    is_benchmark_dir,
+    make_reports,
+    report_path,
+    runs_frame,
+    write_reports,
+)
 from mblab.clipboard import copy_text, paste_text
 from mblab.csvcells import to_cell
 from mblab.demo import DEMO_BANNER, create_demo_study
@@ -1296,12 +1306,15 @@ def dashboard(
     ] = "localhost",
     headless: Annotated[bool, typer.Option(help="Do not open a browser window.")] = False,
 ) -> None:
-    """Open the local web dashboard (needs the `dashboard` extra)."""
+    """Open the local web dashboard for a study or a benchmark (needs the `dashboard` extra)."""
     try:
         import streamlit  # noqa: F401
     except ImportError:
         raise StudyError(install_hint("dashboard", "the dashboard needs Streamlit")) from None
-    Study.load(study)  # fail early with a clear message
+    if is_benchmark_dir(study):  # fail early with a clear message
+        Benchmark.load(study)
+    else:
+        Study.load(study)
     app_path = Path(__file__).parent / "dashboard" / "app.py"
     cmd = [
         sys.executable,
@@ -1341,3 +1354,122 @@ def demo(
     console.print(f"[bold red]{DEMO_BANNER}[/]")
     console.print(f"Created {directory} with {len(s.records)} synthetic records.")
     console.print(f"Try: mblab analyze -s {directory}   |   mblab dashboard -s {directory}")
+
+
+# -- commands: benchmark -------------------------------------------------------------------
+
+benchmark_app = typer.Typer(
+    help="Benchmarks: a fixed task with an independently computed ground truth.",
+    no_args_is_help=True,
+    pretty_exceptions_show_locals=False,
+)
+app.add_typer(benchmark_app, name="benchmark")
+
+BenchmarkDir = Annotated[
+    Path, typer.Argument(help="Benchmark directory (the one holding benchmark.yaml).")
+]
+
+
+@benchmark_app.command("show")
+@_errors
+def benchmark_show(
+    directory: BenchmarkDir,
+    batch: Annotated[
+        list[str] | None, typer.Option(help="Only the runs of this batch (repeatable).")
+    ] = None,
+) -> None:
+    """Recompute the ground truth and score every run (nothing is written)."""
+    b = Benchmark.load(directory)
+    ev = evaluate(b, batch)
+    truth = ev.truth
+    console.print(f"[bold]{escape(b.definition.title)}[/] ({escape(b.definition.benchmark_id)})")
+    console.print(
+        f"{ev.n_runs} observed run(s), recorded by hand, in batch(es) "
+        f"{escape(', '.join(ev.batches))}."
+    )
+    by_first = ", ".join(f"{k}: {v}" for k, v in truth.prefix_counts(1).items())
+    console.print(
+        f"Ground truth, computed by checking every order: {truth.count} valid orders; the first "
+        f"is {truth.lexicographic_first}; by first task {by_first}."
+    )
+    table = Table(show_lines=False)
+    for name in ("Run", "Default", "Per-message", "Count", "Exact count", "First order",
+                 "Second order", "Full success", "Error"):  # fmt: skip
+        table.add_column(name)
+    for row in runs_frame(ev).itertuples():
+        count = "—" if pd.isna(row.count_given) else f"{row.count_given:g}"
+        table.add_row(
+            escape(row.run_id),
+            escape(row.default_selection),
+            escape(row.per_message_selection),
+            count,
+            row.exact_count,
+            row.lexicographic_first,
+            row.other_valid_order,
+            row.full_task_success,
+            escape(row.error_type),
+        )
+    console.print(table)
+    n = ev.n_runs
+    console.print(
+        f"Full task success: {ev.full_successes} pass, {n - ev.full_successes} fail (of {n}); "
+        f"partially correct: {ev.partials}."
+    )
+    parts = [
+        f"{name} {ev.correct(check)[0]}/{n}"
+        for name, check in (
+            ("exact count", "count"),
+            ("first order", "lexicographic_first"),
+            ("second valid order", "other_valid_order"),
+        )
+    ]
+    console.print("By answer: " + "; ".join(parts) + ".")
+    for r in ev.runs:
+        if not r.full_success or any(not c.matches for c in r.breakdown):
+            console.print(f"{escape(r.run.run_id)}: {escape(r.error_detail(truth))}")
+    for comp in ev.comparisons:
+        console.print(f"[bold]{escape(comp.title)}[/]: {escape(comp.text)}")
+    console.print(
+        "Descriptive only: with this many runs nothing here is a test or a measure of any "
+        "model's general accuracy."
+    )
+
+
+@benchmark_app.command("report")
+@_errors
+def benchmark_report(
+    directory: BenchmarkDir,
+    check: Annotated[
+        bool,
+        typer.Option("--check", help="Make the reports again and compare; write nothing."),
+    ] = False,
+) -> None:
+    """Write the reports benchmark.yaml lists; each covers the runs of its batches."""
+    b = Benchmark.load(directory)
+    reports = make_reports(b)
+    if not reports:
+        raise StudyError(f"{BENCHMARK_FILE} lists no reports")
+    if not check:
+        for path in write_reports(b):
+            console.print(f"Wrote {escape(str(path))}.")
+        return
+    differing = 0
+    for spec, text in reports:
+        path = report_path(b, spec)
+        if not path.is_file():
+            console.print(f"[red]{escape(str(path))} not found[/]")
+            differing += 1
+            continue
+        comparison = compare_reports(path.read_text(encoding="utf-8", errors="replace"), text)
+        if comparison.same:
+            console.print(f"[green]{escape(str(path))} matches the report made now.[/]")
+            continue
+        differing += 1
+        console.print(
+            f"[red]{escape(str(path))} differs from the report made now[/] in "
+            f"{comparison.changed_lines} line(s):"
+        )
+        for line in comparison.diff[:CHECK_DIFF_LINES]:
+            console.print(line, markup=False)
+    if differing:
+        raise typer.Exit(1)

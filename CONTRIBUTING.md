@@ -43,12 +43,15 @@ src/mblab/
   report.py      # Markdown report, and comparing a report with a fresh one
   provenance.py  # which code is running: version and git commit
   grading.py     # blind grading sheets
+  benchmark.py   # benchmarks: fixed task, runs recorded by hand, scoring, reports
+  task_ordering.py  # independent ground truth of Benchmark 01's ordering puzzle
   demo.py        # synthetic demo study
   cli.py         # the `mblab` command
   dashboard/     # Streamlit app and chart builders
   templates/     # bundled experiment definitions
 tests/           # pytest suite (no network, no real accounts, no API keys; the SDK is faked)
 docs/            # methodology, protocol, Korean README
+benchmarks/      # observed benchmark runs and their reports (see benchmarks/README.md)
 ```
 
 ## Ground rules for changes
@@ -89,6 +92,11 @@ docs/            # methodology, protocol, Korean README
   `scoring.py` (return `format_failure` when no usable answer exists), and test edge cases.
 - **A template:** a new YAML file in `src/mblab/templates/`; it must load, plan, and pass
   `check_reference_answer` for every task.
+- **Benchmark runs:** append lines to the benchmark's `runs.jsonl` with the next
+  repetition number and a new batch; never edit or delete an existing line. Record only
+  what was observed and leave the rest null. A new report lists its batches in
+  `benchmark.yaml`; earlier reports stay as they are. See
+  [benchmarks/README.md](benchmarks/README.md).
 - **A chart:** a pure function in `dashboard/charts.py` that returns `None` without data;
   add it to `tests/test_charts.py` so its Vega-Lite spec is compiled in both themes, and
   pair it with a table view in the app.

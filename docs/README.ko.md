@@ -17,7 +17,7 @@ effort)이 적용되는지 — 이 실제 응답 동작에 어떤 영향을 주�
 
 ![합성 데모 데이터로 그린 대시보드의 조건 비교 화면. SYNTHETIC DEMO DATA 배너가 보인다](images/dashboard-demo.png)
 
-<sub>**합성 데모 데이터**(`mblab demo`)로 그린 대시보드입니다. 값은 무작위이며 실제 모델이나 서비스에 대해 아무것도 말하지 않습니다. 이 저장소에는 실험 결과가 들어 있지 않습니다.</sub>
+<sub>**합성 데모 데이터**(`mblab demo`)로 그린 대시보드입니다. 값은 무작위이며 실제 모델이나 서비스에 대해 아무것도 말하지 않습니다. 이 저장소에 있는 관측 결과는 [Benchmark 01](#실험-결과)의 6회 실행뿐입니다.</sub>
 
 [English README](../README.md) · [방법론 (영문)](methodology.md) · [실험 프로토콜 (영문)](experiment-protocol.md) · [기여 안내 (영문)](../CONTRIBUTING.md)
 
@@ -50,6 +50,9 @@ AI 클라이언트에는 모델이나 추론 수준을 고르는 방법이 여�
   (`reasoning.effort`)을 비교합니다. 별도 실행 방식이며 실험도 따로 만듭니다(`mblab run-api`).
 - 조건별로 불확실성과 함께 요약하고(Wilson/Newcombe 구간, 시드 고정 부트스트랩), 메시지별
   설정을 기준 조건과 명시적인 판정표로 비교하며, Markdown 보고서와 로컬 대시보드를 만듭니다.
+- 작은 벤치마크를 관리합니다. 정답을 독립적으로 계산하는 고정 문제, 사람이 기록한 실행
+  (기록하지 않은 값은 null), 그로부터 만든 보고서로 이루어집니다(`mblab benchmark`,
+  [benchmarks/README.md](../benchmarks/README.md) 참고).
 
 **하지 않는 일**
 
@@ -58,8 +61,10 @@ AI 클라이언트에는 모델이나 추론 수준을 고르는 방법이 여�
   수 없는 정보이며, 보고서가 그 사실을 명시합니다. API 실험에서는 API가 알려 준 모델 id와
   토큰 수를 받은 그대로 기록할 뿐, 빈 값을 채우거나 짐작하지 않습니다.
 - UI 결과와 API 결과를 합치지 않습니다. 서로 다른 환경이며 나란히 비교만 합니다.
-- 결과를 담고 있지 않습니다. 이 저장소에는 관측 데이터가 없습니다. 데모 데이터는 사용자의
-  컴퓨터에서 생성되고, 무작위이며, 나타나는 모든 곳에 **SYNTHETIC**으로 표시됩니다.
+- 합성 데이터와 관측 데이터를 섞지 않습니다. 데모 데이터는 사용자의 컴퓨터에서 생성되고,
+  무작위이며, 나타나는 모든 곳에 **SYNTHETIC**으로 표시됩니다. 이 저장소의 관측 데이터는
+  Benchmark 01(6회, [실험 결과](#실험-결과) 참고)뿐이며, 별도 형식으로 보관하고 실험
+  데이터와 합치지 않습니다.
 
 ## 빠른 시작
 
@@ -123,8 +128,9 @@ mblab report -s my-study
 
 ## 명령어
 
-모든 명령은 `--study/-s DIR`을 받습니다(기본값: 현재 디렉터리 또는 `$MBLAB_STUDY`).
-`mblab <명령> --help`로 전체 옵션을 볼 수 있습니다.
+실험 명령은 모두 `--study/-s DIR`을 받습니다(기본값: 현재 디렉터리 또는 `$MBLAB_STUDY`).
+`mblab benchmark` 명령은 벤치마크 디렉터리를 인자로 받습니다. `mblab <명령> --help`로 전체
+옵션을 볼 수 있습니다.
 
 | 명령 | 하는 일 |
 |---|---|
@@ -143,8 +149,9 @@ mblab report -s my-study
 | `mblab analyze [--json FILE]` | 응답 채점 후 조건별 요약(불확실성 포함) |
 | `mblab export [--format csv\|json]` | 기록된 실행마다 한 행, 점수 포함 |
 | `mblab report` | Markdown 보고서(`reports/report.md`). 내용이 다른 기존 보고서는 `--force` 없이 덮어쓰지 않고, `--check FILE`은 파일을 쓰지 않고 기존 보고서와 새로 만든 보고서를 비교 |
-| `mblab dashboard` | 로컬 웹 대시보드(`dashboard` 추가 설치 필요) |
+| `mblab dashboard` | 실험 또는 벤치마크 디렉터리의 로컬 웹 대시보드(`dashboard` 추가 설치 필요) |
 | `mblab demo DIR` | 합성 데모 실험 생성 |
+| `mblab benchmark show DIR` / `mblab benchmark report DIR [--check]` | 벤치마크의 정답을 다시 계산해 실행을 채점하고, `benchmark.yaml`에 적힌 보고서를 쓰거나 `--check`로 비교 |
 
 ## 실험 디렉터리
 
@@ -221,6 +228,48 @@ my-study/
 
 조건 추가는 항목을 추가하는 것으로 끝납니다. 템플릿에 *Extra High + Extra High*(같은
 설정 중첩)와 *Extra High + Instant* 예시가 주석으로 들어 있습니다.
+
+## 실험 결과
+
+### Benchmark 01: ChatGPT Model Selection Override — Preliminary Results
+
+처음으로 관측한 실행입니다. 제약 조건 추론 문제 하나(여덟 작업을 여덟 규칙에 맞게 순서
+짓기)를 2026-11-22 ChatGPT 태블릿 앱에서 같은 프롬프트로, 기본 선택과 메시지별 선택의
+조합 여섯 가지에 보냈습니다. **조건마다 1회, 모두 6회**입니다. 탐색적인 예비 결과이며 어떤
+모델의 성능 측정이 아닙니다.
+
+| 조건 | 기본 선택 | 메시지별 선택 | 답한 경우의 수(검증값: 23) | 세 답 모두 정답 |
+|---|---|---|---|---|
+| A | Instant | — | 20 | 아니요 |
+| B | Pro | — | 23 | 예 |
+| C | Instant | Pro | 23 | 예 |
+| D | Pro | Instant | 25 | 아니요 |
+| E | Extra High | — | 23 | 예 |
+| F | Extra High | Extra High | 23 | 예 |
+
+- 모든 응답이 사전순 첫 번째 순서(`ACBDEFGH`)와 또 다른 유효한 순서를 맞혔습니다. 틀린 두
+  응답은 모두 경우의 수에서 틀렸습니다. A는 A로 시작하는 유효한 순서 9개 중 6개만 셌고,
+  D는 C로 시작하는 순서를 8개가 아니라 10개로 셌습니다.
+- C는 B와, D는 A와 결과가 같았습니다. H1(메시지별 선택이 적용된다)이 예측하는 패턴입니다.
+  F는 E와 같았습니다. 조건마다 1회뿐이라 어떤 모델이 응답했는지는 알 수 없고, 6회 중
+  4회는 어떤 모델이나 설정의 정확도도 아닙니다.
+- 정답은 입력한 값이 아니라 계산한 값입니다. [`task_ordering.py`](../src/mblab/task_ordering.py)가
+  40,320가지 순서를 모두 검사하고, [`tests/test_task_ordering.py`](../tests/test_task_ordering.py)가
+  규칙을 따로 한 번 더 적어 그 결과를 검사합니다.
+
+전체 보고서(영문): [benchmarks/benchmark-001-constraint-reasoning/reports/preliminary.md](../benchmarks/benchmark-001-constraint-reasoning/reports/preliminary.md).
+실행 기록은 [`runs.jsonl`](../benchmarks/benchmark-001-constraint-reasoning/runs.jsonl)에 있습니다. 응답 전문은 남기지 않아
+실험자가 정리한 요약을 담았고, 기록하지 않은 값(기기 모델, 앱 버전, 시각)은 null입니다.
+직접 확인하려면:
+
+```bash
+mblab benchmark show benchmarks/benchmark-001-constraint-reasoning
+mblab benchmark report benchmarks/benchmark-001-constraint-reasoning --check
+mblab dashboard -s benchmarks/benchmark-001-constraint-reasoning
+```
+
+조건마다 2회씩 더(모두 18회) 실행할 계획입니다. 새 실행으로 추가하고 두 번째 보고서를
+만들며, 이 보고서는 그대로 둡니다. 저장 방식: [benchmarks/README.md](../benchmarks/README.md)(영문).
 
 ## 공식 API 실험 (추론 수준)
 
@@ -368,6 +417,8 @@ Streamlit 사용 통계 전송은 끈 상태로 시작합니다. 화면 구성:
 
 - [x] 공식 API 실행기(한 모델의 추론 수준별 비교, OpenAI Responses API) — 별도 실행
   방식, `mblab run-api`
+- [x] 독립적으로 계산한 정답과 사람이 기록한 실행으로 이루어진 벤치마크 — `mblab benchmark`
+  (Benchmark 01, 예비 결과)
 
 아직 구현되지 않았습니다. 데이터 모델이 실행 방식을 구분하고 있어 UI 실험을 바꾸지 않고
 추가할 수 있습니다.

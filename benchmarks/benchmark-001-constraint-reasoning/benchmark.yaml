@@ -1,0 +1,193 @@
+# Benchmark 01 — ChatGPT Model Selection Override: Constraint Reasoning
+# =============================================================================
+# One task, sent with the same prompt under six combinations of the default
+# model selection and the per-message selection (long-press on send) in the
+# ChatGPT tablet app. Runs are in runs.jsonl; reports are made from them with
+# `mblab benchmark report`. Field reference: benchmarks/README.md.
+#
+# Values that were not recorded stay null. Selections are the labels chosen in
+# the app; they name a setting, not the model that produced a response.
+# =============================================================================
+
+schema_version: 1
+benchmark_id: benchmark-001-constraint-reasoning
+benchmark_version: "1.0.0"
+title: ChatGPT Model Selection Override — Constraint Reasoning
+service: chatgpt
+platform: ChatGPT tablet app
+execution_method: manual_ui
+
+research_questions:
+  - >-
+    In the ChatGPT mobile client, when the default model selection and the
+    one-off model selection offered by long-pressing the send button are set
+    differently, does the observable accuracy of the response differ?
+  - >-
+    When the same model is selected in both places, is any further gain in
+    reasoning performance observed?
+
+hypotheses:
+  - id: H1
+    statement: >-
+      When the per-message selection differs from the default selection, the
+      observable properties of the response correspond to the per-message
+      selection.
+    predicted_pattern: per_message
+    predictions:
+      - "C (per-message Pro) has the same outcome as B (Pro), and D (per-message Instant) the same outcome as A (Instant)."
+  - id: H1-alt
+    statement: >-
+      When the per-message selection differs from the default selection, the
+      observable properties of the response correspond to the default
+      selection.
+    predicted_pattern: default
+    predictions:
+      - "C has the same outcome as A, and D the same outcome as B."
+  - id: H2
+    statement: >-
+      Choosing the same setting as both the default and the per-message
+      selection produces behaviour that is not distinguishable from choosing
+      it once. (Not detecting a difference does not establish equivalence.)
+    predicted_pattern: no_difference
+    predictions:
+      - "F has the same outcome as E."
+
+# Statements checked in OFFICIAL documentation, with URL and date. None.
+documented_facts: []
+
+not_observable:
+  - The backend model that produced each response.
+  - Which selection the service gives priority to (server-side routing).
+  - The reasoning effort actually applied to a response.
+  - How many reasoning tokens a response used.
+  - Whether choosing a setting twice stacks in any way (for example nested reasoning).
+  - Whether the account was part of a server-side experiment (A/B test).
+
+not_recorded:
+  - The tablet model and its operating system.
+  - The ChatGPT app version (build number).
+  - The time of each run and the order in which the runs were made.
+  - Response times.
+  - The model label, if any, that the app showed with each response.
+  - "The full response texts: each run holds the experimenter's structured summary of the response."
+  - The account plan, memory, and custom-instruction settings.
+
+selection_options:
+  - id: instant
+    label: Instant
+  - id: pro
+    label: Pro
+  - id: extra-high
+    label: Extra High
+
+conditions:
+  - id: A
+    label: Default Instant, no per-message selection
+    model_selection: instant
+    message_override: null
+    role: control
+  - id: B
+    label: Default Pro, no per-message selection
+    model_selection: pro
+    message_override: null
+    role: control
+  - id: C
+    label: Default Instant, per-message Pro
+    model_selection: instant
+    message_override: pro
+    role: test
+    hypothesis_ids: [H1, H1-alt]
+  - id: D
+    label: Default Pro, per-message Instant
+    model_selection: pro
+    message_override: instant
+    role: test
+    hypothesis_ids: [H1, H1-alt]
+  - id: E
+    label: Default Extra High, no per-message selection
+    model_selection: extra-high
+    message_override: null
+    role: control
+  - id: F
+    label: Default Extra High, per-message Extra High (same setting twice)
+    model_selection: extra-high
+    message_override: extra-high
+    role: test
+    hypothesis_ids: [H2]
+
+task:
+  id: T1
+  title: Ordering eight tasks under eight rules
+  category: logic and combinatorics
+  language: ko
+  # Kept verbatim. Every run records the SHA-256 of this text, so an edit after
+  # recording stops the benchmark from loading.
+  prompt: |-
+    다음 논리 문제를 풀어라. 외부 도구, 웹 검색, 코드 실행은 사용하지 말고 주어진 조건만으로 해결하라.
+
+    서로 다른 작업 A, B, C, D, E, F, G, H를 각각 정확히 한 번 수행한다. 작업은 한 번에 하나씩 순서대로 진행한다.
+
+    다음 조건을 모두 만족해야 한다.
+
+    1. A는 D와 E보다 먼저 수행되어야 한다.
+    2. B는 D보다 먼저 수행되어야 한다.
+    3. C는 E와 F보다 먼저 수행되어야 한다.
+    4. D와 E는 모두 G보다 먼저 수행되어야 한다.
+    5. F와 G는 모두 H보다 먼저 수행되어야 한다.
+    6. A와 B는 서로 바로 이웃한 순서에 위치할 수 없다.
+    7. D와 F는 서로 바로 이웃한 순서에 위치할 수 없다.
+    8. C는 첫 번째부터 네 번째 위치 중 하나에 있어야 한다.
+
+    질문:
+
+    (1) 모든 조건을 만족하는 서로 다른 작업 순서는 총 몇 개인가?
+
+    (2) 그중 사전순으로 가장 앞서는 순서를 제시하라.
+
+    (3) (2)와 다른 유효한 순서를 하나 제시하라.
+
+    출력 형식:
+
+    총 경우의 수: [정수]
+    사전순 첫 번째 순서: [8글자]
+    다른 유효한 순서: [8글자]
+    검증 설명: [핵심 조건을 확인하는 간결한 설명]
+
+    확실하지 않은 경우에는 추측으로 단정하지 말고 불확실성을 명시하라.
+  prompt_source: >-
+    Text as provided by the experimenter on 2026-11-22. In that copy the first
+    three output-format lines ended with a Markdown line-break backslash; they
+    are stored without it.
+  # The independent ground truth: mblab.task_ordering checks all 40,320 orders.
+  verifier: task-ordering-8
+  # The answer lines the prompt asks for. The fourth line (검증 설명, the
+  # explanation) is not scored.
+  answers:
+    - id: count
+      label: 총 경우의 수
+      check: count
+      reference_answer: "23"
+    - id: lexicographic_first
+      label: 사전순 첫 번째 순서
+      check: lexicographic_first
+      reference_answer: ACBDEFGH
+    - id: other_valid_order
+      label: 다른 유효한 순서
+      check: other_valid_order
+      reference_answer: ACBDEGFH   # one example; any other valid order also counts
+
+# Plans, not results. Nothing has been recorded for them.
+planned:
+  - Two more runs of every condition (repetitions 2 and 3), for 18 runs in all.
+  - More task types.
+  - Relating the settings to accuracy across those tasks.
+  - Recording the app version and the device for every run.
+
+# Each report covers the runs of the batches it lists. A later report (for
+# example after the 18 runs) is added here with its own batches and path; this
+# one stays as it is.
+reports:
+  - id: preliminary
+    title: "Benchmark 01: ChatGPT Model Selection Override — Preliminary Results"
+    batches: [2026-11-22-preliminary]
+    path: reports/preliminary.md

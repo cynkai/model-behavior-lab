@@ -456,6 +456,50 @@ class AnalysisPlan(StrictModel):
     )
 
 
+def condition_problems(
+    options: list[SelectionOption], conditions: list[Condition], hypotheses: list[Hypothesis]
+) -> list[str]:
+    """What is wrong with a set of selection options, conditions, and hypotheses.
+
+    Shared by experiment and benchmark definitions: ids are unique, every condition names
+    defined options and hypotheses, no two conditions use identical settings, and no two
+    options share a label.
+    """
+    problems: list[str] = []
+    for kind, ids in (
+        ("selection option", [o.id for o in options]),
+        ("condition", [c.id for c in conditions]),
+        ("hypothesis", [h.id for h in hypotheses]),
+    ):
+        for dup in _duplicates(ids):
+            problems.append(f"duplicate {kind} id '{dup}'")
+
+    option_ids = {o.id for o in options}
+    hypothesis_ids = {h.id for h in hypotheses}
+    seen_settings: dict[tuple[str, str | None], str] = {}
+    for cond in conditions:
+        for field_name in ("model_selection", "message_override"):
+            value = getattr(cond, field_name)
+            if value is not None and value not in option_ids:
+                problems.append(
+                    f"condition '{cond.id}': {field_name} '{value}' is not a selection option id"
+                )
+        for hid in cond.hypothesis_ids:
+            if hid not in hypothesis_ids:
+                problems.append(f"condition '{cond.id}': unknown hypothesis id '{hid}'")
+        key = (cond.model_selection, cond.message_override)
+        if key in seen_settings:
+            problems.append(
+                f"conditions '{seen_settings[key]}' and '{cond.id}' use identical settings"
+            )
+        seen_settings[key] = cond.id
+
+    labels = [normalize_label(o.label) for o in options]
+    for dup in _duplicates(labels):
+        problems.append(f"two selection options share the label '{dup}'")
+    return problems
+
+
 class ExperimentDefinition(VersionedModel):
     file_kind: ClassVar[str] = "this definition"
     schema_version: Literal[1] = 1
@@ -543,39 +587,12 @@ class ExperimentDefinition(VersionedModel):
     def _check_references(self) -> ExperimentDefinition:
         problems: list[str] = self._execution_problems()
         for kind, ids in (
-            ("selection option", [o.id for o in self.selection_options]),
-            ("condition", [c.id for c in self.conditions]),
             ("task", [t.id for t in self.tasks]),
-            ("hypothesis", [h.id for h in self.hypotheses]),
             ("confounder", [c.id for c in self.confounders]),
         ):
             for dup in _duplicates(ids):
                 problems.append(f"duplicate {kind} id '{dup}'")
-
-        option_ids = {o.id for o in self.selection_options}
-        hypothesis_ids = {h.id for h in self.hypotheses}
-        seen_settings: dict[tuple[str, str | None], str] = {}
-        for cond in self.conditions:
-            for field_name in ("model_selection", "message_override"):
-                value = getattr(cond, field_name)
-                if value is not None and value not in option_ids:
-                    problems.append(
-                        f"condition '{cond.id}': {field_name} '{value}' "
-                        "is not a selection option id"
-                    )
-            for hid in cond.hypothesis_ids:
-                if hid not in hypothesis_ids:
-                    problems.append(f"condition '{cond.id}': unknown hypothesis id '{hid}'")
-            key = (cond.model_selection, cond.message_override)
-            if key in seen_settings:
-                problems.append(
-                    f"conditions '{seen_settings[key]}' and '{cond.id}' use identical settings"
-                )
-            seen_settings[key] = cond.id
-
-        labels = [normalize_label(o.label) for o in self.selection_options]
-        for dup in _duplicates(labels):
-            problems.append(f"two selection options share the label '{dup}'")
+        problems += condition_problems(self.selection_options, self.conditions, self.hypotheses)
 
         if problems:
             raise ValueError("; ".join(problems))

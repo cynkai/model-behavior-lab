@@ -357,3 +357,71 @@ def repetition_chart(grid: pd.DataFrame, mode: str | None) -> alt.Chart | None:
         )
     )
     return _style(chart, t)
+
+
+def benchmark_count_chart(runs: pd.DataFrame, verified: int, mode: str | None) -> alt.Chart | None:
+    """One mark per run: the count it gave, by condition, against the verified count (a rule).
+
+    Correct and incorrect counts differ in colour and shape, with a legend.
+    """
+    t = theme(mode)
+    data = runs[runs["count_given"].notna()].copy()
+    if data.empty:
+        return None
+    data["condition"] = (
+        data["condition_id"]
+        + " · "
+        + data["default_selection"]
+        + " / "
+        + data["per_message_selection"]
+    )
+    data["result"] = data["exact_count"].map({"Pass": "correct", "Fail": "incorrect"})
+    data = data[data["result"].notna()]
+    if data.empty:
+        return None
+    order = list(dict.fromkeys(data["condition"]))
+    values = [*data["count_given"].astype(float).tolist(), float(verified)]
+    domain = [min(values) - 2, max(values) + 2]
+    results = ["correct", "incorrect"]
+    y = alt.Y("condition:N", sort=order, title=None, axis=alt.Axis(grid=False, labelLimit=260))
+    x = alt.X(
+        "count_given:Q",
+        scale=alt.Scale(domain=domain, nice=False, zero=False),
+        axis=alt.Axis(tickMinStep=1, format="d"),
+        title="Number of valid orders the response gave",
+    )
+    dots = (
+        alt.Chart(data)
+        .mark_point(filled=True, size=140, opacity=1, stroke=t["surface"], strokeWidth=1)
+        .encode(
+            x=x,
+            y=y,
+            color=alt.Color(
+                "result:N",
+                scale=alt.Scale(domain=results, range=[STATUS["good"], STATUS["critical"]]),
+                legend=alt.Legend(title=None),
+            ),
+            shape=alt.Shape(
+                "result:N",
+                scale=alt.Scale(domain=results, range=[OUTCOME_SHAPE[r] for r in results]),
+                legend=alt.Legend(title=None),
+            ),
+            tooltip=[
+                alt.Tooltip("run_id:N", title="Run"),
+                alt.Tooltip("condition:N", title="Condition"),
+                alt.Tooltip("count_given:Q", title="Count given"),
+                alt.Tooltip("result:N", title="Result"),
+            ],
+        )
+    )
+    line = pd.DataFrame({"verified": [verified], "text": [f"verified: {verified}"]})
+    rule = alt.Chart(line).mark_rule(color=t["ink2"], strokeDash=[4, 3]).encode(x="verified:Q")
+    label = (
+        alt.Chart(line)
+        .mark_text(align="left", baseline="top", dx=4, dy=2, color=t["ink2"], fontSize=11)
+        .encode(x="verified:Q", y=alt.value(0), text="text:N")
+    )
+    chart = (rule + label + dots).properties(
+        height=44 * len(order), title="Count given for question (1), by run"
+    )
+    return _style(chart, t)

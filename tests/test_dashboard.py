@@ -299,3 +299,27 @@ def test_held_api_runs_are_shown_where_run_api_skips_them(monkeypatch, tmp_path)
     plan_table = at.dataframe[-1].value
     assert plan_table.set_index("run").loc[held.run_id, "status"] == "held back"
     assert at.selectbox(key="run-select").value != held.run_id  # the next run to send
+
+
+def test_a_benchmark_directory_gets_the_benchmark_page(monkeypatch):
+    from .test_benchmark import BENCH
+
+    at = _app(monkeypatch, BENCH)
+    assert [t.value for t in at.title] == [
+        md_text("ChatGPT Model Selection Override — Constraint Reasoning")
+    ]
+    metrics = {m.label: m.value for m in at.metric}
+    assert metrics == {
+        "Full task success": "4 of 6",
+        "Partially correct": "2 of 6",
+        "Exact count": "4 of 6",
+        "Valid orders given": "12 of 12",
+    }
+    assert _charts(at) == 1  # counts given; no response-time chart (none were recorded)
+    headers = [h.value for h in at.subheader]
+    assert "Comparisons" in headers and "Error analysis" in headers
+    markdown = " ".join(m.value for m in at.markdown)
+    for title in ("B vs C", "A vs D", "E vs F"):
+        assert md_text(title) in markdown
+    assert not at.sidebar.radio  # one page: the study pages do not apply
+    assert any("Exploratory" in i.value for i in at.info)

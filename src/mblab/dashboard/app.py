@@ -9,6 +9,9 @@ Run with ``mblab dashboard -s <study-dir>``. Pages:
 * Individual responses — filter and read single runs
 * Methodology & limitations — what is and is not measured, claims ledger
 
+A benchmark directory (``mblab dashboard -s benchmarks/<id>``) gets one page instead: its
+runs, the checks of each answer against the verified ground truth, and the comparisons.
+
 Streamlit renders text, captions, alerts, and widget labels as Markdown. Every value
 taken from a study (definition, plan, records, or messages built from them) goes through
 ``md_text`` first, so a study file from someone else cannot add links, remote images, or
@@ -28,6 +31,17 @@ from pydantic import ValidationError
 
 from mblab import api_runner
 from mblab.analysis import LABEL_CLASS_TEXT, Analysis, analyze, hypothesis_tallies
+from mblab.benchmark import (
+    BENCHMARK_FILE,
+    RUNS_FILE,
+    Benchmark,
+    Evaluation,
+    breakdown_frame,
+    evaluate,
+    is_benchmark_dir,
+    runs_frame,
+    selection_grid,
+)
 from mblab.dashboard import PAGES, charts
 from mblab.demo import DEMO_BANNER
 from mblab.exchange import merge_records
@@ -836,6 +850,174 @@ def page_methodology(study: Study, a: Analysis) -> None:
     st.caption(f"Full protocol: [docs/experiment-protocol.md]({DOCS}/experiment-protocol.md)")
 
 
+# -- benchmark -----------------------------------------------------------------------------
+
+
+def _benchmark_stamp(root: Path) -> tuple:
+    names = (BENCHMARK_FILE, RUNS_FILE)
+    return tuple((n, (root / n).stat().st_mtime_ns if (root / n).exists() else 0) for n in names)
+
+
+@st.cache_resource(show_spinner=False, max_entries=4)
+def _load_benchmark(root: str, stamp: tuple) -> Benchmark:
+    return Benchmark.load(root)
+
+
+def _bullets(items: list[str]) -> None:
+    for item in items:
+        st.markdown("- " + md_text(item))
+
+
+def page_benchmark(root: Path) -> None:
+    try:
+        bench = _load_benchmark(str(root.resolve()), _benchmark_stamp(root))
+    except StudyError as exc:
+        st.error(md_text(exc))
+        st.stop()
+    batches = bench.batches
+    with st.sidebar:
+        chosen = batches
+        if len(batches) > 1:
+            chosen = st.multiselect("Batches", batches, default=batches, key="batches") or batches
+        st.caption(f"{len(bench.runs)} observed runs (benchmark)")
+        st.caption(f"model-behavior-lab {code_version().label()}")
+    ev: Evaluation = evaluate(bench, chosen)
+    d = bench.definition
+    truth = ev.truth
+    n = ev.n_runs
+
+    st.title(md_text(d.title))
+    st.info(
+        md_text(
+            f"Observed data, recorded by hand: {n} runs, {ev.runs_per_condition()} per condition, "
+            "one task. Exploratory: the figures describe these runs only, not any model's "
+            "general accuracy, and nothing here is a statistical test."
+        ),
+        icon="🔎",
+    )
+    count_ok, _ = ev.correct("count")
+    first_ok, _ = ev.correct("lexicographic_first")
+    other_ok, _ = ev.correct("other_valid_order")
+    cols = st.columns(4)
+    cols[0].metric("Full task success", f"{ev.full_successes} of {n}")
+    cols[1].metric("Partially correct", f"{ev.partials} of {n}")
+    cols[2].metric("Exact count", f"{count_ok} of {n}")
+    cols[3].metric("Valid orders given", f"{first_ok + other_ok} of {2 * n}")
+
+    frame = runs_frame(ev)
+    st.subheader("Results by run")
+    _table(
+        frame[
+            [
+                "run_id",
+                "condition_id",
+                "default_selection",
+                "per_message_selection",
+                "count_given",
+                "exact_count",
+                "lexicographic_first",
+                "other_valid_order",
+                "full_task_success",
+                "error_type",
+            ]
+        ].rename(
+            columns={
+                "run_id": "Run",
+                "condition_id": "Condition",
+                "default_selection": "Default",
+                "per_message_selection": "Per-message",
+                "count_given": "Count given",
+                "exact_count": "Exact count",
+                "lexicographic_first": "Lexicographic first",
+                "other_valid_order": "Second valid order",
+                "full_task_success": "Full task success",
+                "error_type": "Error type",
+            }
+        )
+    )
+
+    st.subheader("Counts given")
+    _chart(
+        charts.benchmark_count_chart(frame, truth.count, _mode()),
+        frame[["run_id", "condition_id", "count_given", "exact_count"]],
+        caption=(
+            "Each mark is one run's answer to question (1); the dashed line is the verified "
+            "count. Response times were not recorded, so there is no response-time chart."
+        ),
+    )
+
+    st.subheader("Default and per-message selection")
+    _table(selection_grid(ev))
+    st.caption(
+        "Rows: the default selection. Columns: the per-message selection (long-press on send). "
+        "Each cell: the condition, its fully correct runs, and the count it gave."
+    )
+
+    st.subheader("Comparisons")
+    for comp in ev.comparisons:
+        st.markdown(f"**{md_text(comp.title)}**")
+        st.markdown(md_text(comp.text))
+
+    st.subheader("Error analysis")
+    _table(
+        pd.DataFrame(
+            [
+                {
+                    "Run": r.run.run_id,
+                    "Condition": r.condition.id,
+                    "Error type": r.error_type(truth),
+                    "Detail": r.error_detail(truth),
+                }
+                for r in ev.runs
+            ]
+        )
+    )
+    checks = breakdown_frame(ev)
+    if not checks.empty:
+        with st.expander("Intermediate counts in the experimenter's notes vs. the verifier"):
+            _table(checks)
+
+    st.subheader("Ground truth")
+    st.markdown(
+        md_text(
+            f"{truth.count} valid orders; the lexicographically first is "
+            f"{truth.lexicographic_first}. Computed by checking all 40,320 orders against the "
+            "eight rules; no response and no run value is used."
+        )
+    )
+    left, right = st.columns(2)
+    with left:
+        _table(
+            pd.DataFrame(
+                [{"First task": k, "Valid orders": v} for k, v in truth.prefix_counts(1).items()]
+            )
+        )
+    with right:
+        _table(
+            pd.DataFrame(
+                [
+                    {"First two tasks": k, "Valid orders": v}
+                    for k, v in truth.prefix_counts(2).items()
+                ]
+            )
+        )
+    with st.expander("Task prompt (verbatim)"):
+        st.code(d.task.prompt, language=None)
+    with st.expander("Experimenter's notes per run (verbatim)"):
+        for r in ev.runs:
+            st.markdown(f"**{md_text(r.run.run_id)}**")
+            st.code("\n".join(r.run.solution_summary) or "(none)", language=None)
+
+    st.subheader("Not recorded and not observable")
+    _bullets(d.not_recorded)
+    _bullets(d.not_observable)
+    if not d.documented_facts:
+        st.caption(
+            "No documented facts are recorded: nothing on this page is a statement from "
+            "product documentation."
+        )
+
+
 RENDERERS = {
     "Overview": page_overview,
     "Run plan & recording": page_record,
@@ -850,12 +1032,16 @@ def main() -> None:
     st.set_page_config(page_title="Model Behavior Lab", page_icon="🔬", layout="wide")
     if "study_dir" not in st.session_state:
         st.session_state["study_dir"] = _initial_study_dir()
+    root = Path(st.session_state["study_dir"]).expanduser()
+    benchmark = is_benchmark_dir(root)
     with st.sidebar:
         st.markdown("### Model Behavior Lab")
         st.caption("Does your AI actually behave as configured?")
-        page = st.radio("Page", PAGES, key="page")
-        st.text_input("Study directory", key="study_dir")
-    root = Path(st.session_state["study_dir"]).expanduser()
+        page = None if benchmark else st.radio("Page", PAGES, key="page")
+        st.text_input("Study or benchmark directory", key="study_dir")
+    if benchmark:
+        page_benchmark(root)
+        return
     try:
         study, analysis = _load(str(root.resolve()), _stamp(root))
     except StudyError as exc:
@@ -867,7 +1053,7 @@ def main() -> None:
         else:
             st.caption(f"{len(analysis.results)} observed records")
         st.caption(f"model-behavior-lab {code_version().label()}")
-    RENDERERS[page](study, analysis)
+    RENDERERS[str(page)](study, analysis)
 
 
 if __name__ == "__main__":  # Streamlit runs this file as __main__

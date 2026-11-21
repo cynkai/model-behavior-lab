@@ -22,7 +22,7 @@ every report says which is which.
 
 ![The dashboard's condition comparison page, showing synthetic demo data with a SYNTHETIC DEMO DATA banner](docs/images/dashboard-demo.png)
 
-<sub>The dashboard on **synthetic demo data** (`mblab demo`). The values are random and describe no real model or service. The repository contains no experimental results.</sub>
+<sub>The dashboard on **synthetic demo data** (`mblab demo`). The values are random and describe no real model or service. The only observed results in the repository are the six runs of [Benchmark 01](#experimental-results).</sub>
 
 [한국어 README](docs/README.ko.md) · [Methodology](docs/methodology.md) · [Experiment protocol](docs/experiment-protocol.md) · [Contributing](CONTRIBUTING.md)
 
@@ -32,7 +32,7 @@ every report says which is which.
 
 - [Why](#why) · [What it does — and does not](#what-it-does--and-does-not)
 - [Quick start](#quick-start) · [Commands](#commands) · [Study directory](#study-directory)
-- [The first experiment](#the-first-experiment) · [Official-API studies](#official-api-studies-reasoning-effort) · [Dashboard](#dashboard)
+- [The first experiment](#the-first-experiment) · [Experimental results](#experimental-results) · [Official-API studies](#official-api-studies-reasoning-effort) · [Dashboard](#dashboard)
 - [Methodology in brief](#methodology-in-brief) · [Data, privacy, terms of service](#data-privacy-and-terms-of-service)
 - [Known limitations](#known-limitations) · [Contributing](#contributing) · [Roadmap](#roadmap)
 
@@ -68,6 +68,9 @@ provides.
 - Summarise per condition with uncertainty (Wilson / Newcombe intervals, seeded
   bootstrap), compare per-message settings against reference conditions with an explicit
   decision table, and write a Markdown report and a local dashboard.
+- Keep small benchmarks: a fixed task whose ground truth is computed independently, runs
+  recorded by hand (unrecorded values stay null), and reports made from them
+  (`mblab benchmark`, see [benchmarks/README.md](benchmarks/README.md)).
 
 **It does not**
 
@@ -76,8 +79,10 @@ provides.
   observable in a UI experiment, and the reports say so. In an API study, the model id
   and token counts the API reports are recorded as returned — never filled in or guessed.
 - Pool UI and API results. They are different environments, compared side by side only.
-- Ship results. There is no observed data in this repository. Demo data is generated on
-  your machine, is random, and is labelled **SYNTHETIC** everywhere it appears.
+- Mix synthetic and observed data. Demo data is generated on your machine, is random,
+  and is labelled **SYNTHETIC** everywhere it appears. The only observed data in this
+  repository is Benchmark 01 (six runs, see [Experimental results](#experimental-results)),
+  kept in its own format and never pooled with a study.
 
 ## Quick start
 
@@ -141,8 +146,9 @@ procedure — app settings, timing, what counts as a deviation — is in
 
 ## Commands
 
-Every command takes `--study/-s DIR` (default: the current directory, or `$MBLAB_STUDY`).
-`mblab <command> --help` lists all options.
+Every study command takes `--study/-s DIR` (default: the current directory, or
+`$MBLAB_STUDY`); the `mblab benchmark` commands take the benchmark directory as an
+argument. `mblab <command> --help` lists all options.
 
 | Command | What it does |
 |---|---|
@@ -161,8 +167,9 @@ Every command takes `--study/-s DIR` (default: the current directory, or `$MBLAB
 | `mblab analyze [--json FILE]` | Score responses and summarise per condition, with uncertainty |
 | `mblab export [--format csv\|json]` | One row per recorded run, with its score |
 | `mblab report` | Markdown report (`reports/report.md`); never replaces a report with different content unless `--force`, and `--check FILE` compares an existing report with a fresh one instead of writing |
-| `mblab dashboard` | Local web dashboard (needs the `dashboard` extra) |
+| `mblab dashboard` | Local web dashboard for a study or a benchmark directory (needs the `dashboard` extra) |
 | `mblab demo DIR` | Create a synthetic demo study |
+| `mblab benchmark show DIR` / `mblab benchmark report DIR [--check]` | Recompute a benchmark's ground truth and score its runs; write the reports its `benchmark.yaml` lists, or compare them with `--check` |
 
 ## Study directory
 
@@ -255,6 +262,50 @@ conditions:
     model_selection: extra-high
     message_override: extra-high
 ```
+
+## Experimental results
+
+### Benchmark 01: ChatGPT Model Selection Override — Preliminary Results
+
+The first observed runs: one constraint-reasoning task (ordering eight tasks under eight
+rules), sent with the same prompt in the ChatGPT tablet app on 2026-11-22 under six
+combinations of the default selection and the per-message selection — **one run per
+condition, six runs in all**. An exploratory, preliminary result, not a measure of any
+model.
+
+| Condition | Default | Per-message | Count given (verified: 23) | All three answers correct |
+|---|---|---|---|---|
+| A | Instant | — | 20 | no |
+| B | Pro | — | 23 | yes |
+| C | Instant | Pro | 23 | yes |
+| D | Pro | Instant | 25 | no |
+| E | Extra High | — | 23 | yes |
+| F | Extra High | Extra High | 23 | yes |
+
+- Every response gave the lexicographically first order (`ACBDEFGH`) and a second valid
+  order. Both misses are counts: A found 6 of the 9 valid orders that start with A, and D
+  counted 10 that start with C where there are 8.
+- C matched B and D matched A, the pattern H1 (the per-message selection applies)
+  predicts; F matched E. With one run per condition this does not show which model
+  produced a response, and 4 of 6 is not the accuracy of any model or setting.
+- The ground truth is computed, not typed in: [`task_ordering.py`](src/mblab/task_ordering.py)
+  checks all 40,320 orders, and [`tests/test_task_ordering.py`](tests/test_task_ordering.py)
+  checks it against the rules written out a second time.
+
+Full report: [benchmarks/benchmark-001-constraint-reasoning/reports/preliminary.md](benchmarks/benchmark-001-constraint-reasoning/reports/preliminary.md).
+The runs are in [`runs.jsonl`](benchmarks/benchmark-001-constraint-reasoning/runs.jsonl): the experimenter's structured
+summaries, since the full response texts were not kept; values that were not recorded
+(device model, app version, times) are null. To check them:
+
+```bash
+mblab benchmark show benchmarks/benchmark-001-constraint-reasoning
+mblab benchmark report benchmarks/benchmark-001-constraint-reasoning --check
+mblab dashboard -s benchmarks/benchmark-001-constraint-reasoning
+```
+
+Two more runs of each condition (18 in all) are planned. They will be added as new runs
+with a second report; this one stays as it is. How benchmarks are stored:
+[benchmarks/README.md](benchmarks/README.md).
 
 ## Official-API studies (reasoning effort)
 
@@ -418,6 +469,8 @@ The *Result submission* issue templates list what to include.
 
 - [x] Official API runner (reasoning-effort levels of one model, OpenAI Responses API), as
   its own execution method — `mblab run-api`
+- [x] Benchmarks with an independently computed ground truth, runs recorded by hand —
+  `mblab benchmark` (Benchmark 01, preliminary)
 
 Not implemented yet; the data model separates execution methods so these can be added
 without changing UI experiments:

@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+### Reports you can check
+
+- Reports name the code that made them: the version and the git commit, read from the
+  checkout the code runs from or from pip's record of a `git+https://…` install (a
+  working copy with uncommitted changes in `src/mblab` is called that; a copy installed
+  any other way says the commit is not recorded). `mblab --version` and the dashboard
+  show the same. Before, every commit called itself 0.1.0.
+- The reproduction commands install that commit (or the version's release tag when the
+  commit is unknown) instead of whatever the default branch holds, and repeat the
+  `--confidence` / `--min-n` options a report was made with.
+- `mblab report --check FILE` makes the report again and compares it with `FILE` without
+  writing anything; only the generation time and the lines naming the code are ignored,
+  and it exits with status 1 if anything else differs. `mblab report` no longer replaces
+  an existing report whose content differs unless `--force` is given (an identical one is
+  left as it is), so following the reproduction steps cannot overwrite the report being
+  checked.
+- Official-API reports list the SHA-256 of `api-unrecorded.jsonl`, which changes their
+  limitations, and the sharing instructions ask for it. The reproduction table also says
+  which version made the plan.
+
 ### Task-standardized comparisons
 
 - Differences of proportions (accuracy, the thinking-indicator rate, and the new task

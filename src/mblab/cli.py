@@ -21,7 +21,7 @@ from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
 
-from mblab import __version__, api_runner, install_hint
+from mblab import api_runner, install_hint
 from mblab.analysis import LABEL_CLASSES, Analysis, AnalysisSettings, analyze
 from mblab.clipboard import copy_text, paste_text
 from mblab.csvcells import to_cell
@@ -44,8 +44,9 @@ from mblab.formatting import (
 from mblab.grading import export_blind_sheet, import_blind_sheet
 from mblab.pilot import PILOT_BANNER, create_pilot_study, displayed_labels
 from mblab.plan import generate_plan
+from mblab.provenance import code_version
 from mblab.records import build_record, condition_instructions, next_pending, parse_decimal
-from mblab.report import render_report
+from mblab.report import compare_reports, render_report
 from mblab.schema import PlannedRun, RunRecord
 from mblab.stats import Interval
 from mblab.study import (
@@ -56,6 +57,7 @@ from mblab.study import (
     Study,
     StudyError,
     append_jsonl,
+    atomic_write_text,
     available_templates,
     dump_json,
     format_validation_error,
@@ -109,7 +111,7 @@ def _errors(func: F) -> F:
 
 def _version_callback(value: bool) -> None:
     if value:
-        console.print(f"mblab {__version__}")
+        console.print(f"mblab {code_version().label()}")
         raise typer.Exit()
 
 
@@ -1128,6 +1130,50 @@ def grade_import(
 # -- commands: report and dashboard ----------------------------------------------------
 
 
+#: Diff lines shown by ``mblab report --check`` before the rest is summarised.
+CHECK_DIFF_LINES = 80
+
+
+def _check_report(path: Path, text: str) -> None:
+    if not path.is_file():
+        raise StudyError(f"{path} not found (--check needs the report to compare with)")
+    comparison = compare_reports(path.read_text(encoding="utf-8", errors="replace"), text)
+    current = code_version().label()
+    if comparison.same:
+        console.print(
+            f"[green]{escape(str(path))} matches the report made now[/] (the generation time "
+            "and the code version are not compared)."
+        )
+    else:
+        console.print(
+            f"[red]{escape(str(path))} differs from the report made now[/] in "
+            f"{comparison.changed_lines} line(s), not counting the generation time and the code "
+            "version:"
+        )
+        for line in comparison.diff[:CHECK_DIFF_LINES]:
+            console.print(line, markup=False)
+        if len(comparison.diff) > CHECK_DIFF_LINES:
+            console.print(f"… {len(comparison.diff) - CHECK_DIFF_LINES} more diff line(s)")
+        if comparison.settings_differ:
+            console.print(
+                "One of the two reports uses analysis settings other than the pre-registered "
+                "ones: repeat the options shown in the report's Reproduction section."
+            )
+    if comparison.made_with and comparison.made_with != current:
+        console.print(
+            f"The report was made with model-behavior-lab {comparison.made_with}; this "
+            f"is {current}."
+            + (
+                ""
+                if comparison.same
+                else " Install the code named in its Reproduction section to compare like with like."
+            ),
+            markup=False,
+        )
+    if not comparison.same:
+        raise typer.Exit(1)
+
+
 @app.command()
 @_errors
 def report(
@@ -1148,14 +1194,47 @@ def report(
             min=0.8, max=0.995, help="Confidence level for intervals (default: experiment.yaml)."
         ),
     ] = None,
+    check: Annotated[
+        Path | None,
+        typer.Option(
+            help="Compare this existing report with one made now and write nothing. Only the "
+            "generation time and the code version are ignored; exit code 1 if they differ.",
+        ),
+    ] = None,
+    force: Annotated[
+        bool, typer.Option(help="Replace an existing report whose content differs.")
+    ] = False,
 ) -> None:
-    """Write a Markdown report: question, hypotheses, method, results, limitations."""
+    """Write a Markdown report: question, hypotheses, method, results, limitations.
+
+    An existing report is never replaced by one with other content unless --force is
+    given; --check compares instead of writing.
+    """
+    if check is not None and (out is not None or force):
+        raise StudyError("--check writes nothing, so it cannot be combined with --out or --force")
     s = Study.load(study)
     a = analyze(s, _settings(s, confidence=confidence, min_n=min_n))
+    text = render_report(a, s)
+    if check is not None:
+        _check_report(check, text)
+        return
     target = out or study / "reports" / "report.md"
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(render_report(a, s), encoding="utf-8")
-    console.print(f"Wrote {target}")
+    if target.exists() and not force:
+        comparison = compare_reports(target.read_text(encoding="utf-8", errors="replace"), text)
+        if not comparison.same:
+            raise StudyError(
+                f"{target} already exists and differs from the report made now "
+                f"({comparison.changed_lines} line(s), not counting the generation time and the "
+                f"code version). See the differences with `mblab report -s {study} --check "
+                f"{target}`, write the new report elsewhere with --out, or replace it with --force."
+            )
+        made = (
+            f", made with model-behavior-lab {comparison.made_with}" if comparison.made_with else ""
+        )
+        console.print(f"{target} already holds this report{made}. Left unchanged.", markup=False)
+    else:
+        atomic_write_text(target, text)
+        console.print(f"Wrote {target}", markup=False)
     if a.synthetic:
         console.print(f"[bold red]{DEMO_BANNER}[/]")
     if a.definition.pilot:

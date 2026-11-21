@@ -274,6 +274,20 @@ such lines byte for byte, and keep the previous file as `.bak`, instead of dropp
 they cannot parse. All writes happen under one study-wide lock, after reading the files
 again, so concurrent commands cannot lose or duplicate a run.
 
+**Checking a shared report.** The report's *Reproduction* section gives the SHA-256 of
+every file it was made from (including `api-unrecorded.jsonl` in official-API studies,
+whose billed-but-unrecorded responses are counted among the limitations), the version
+and git commit of the code that made it, and the commands that repeat it, with any
+analysis options that differ from the pre-registered ones. The commit comes from the git
+checkout the code runs from, or from pip's record of a `git+https://…` install; when
+neither is available the report says the commit is not recorded, and when the checkout
+has uncommitted changes it says the exact code cannot be installed.
+`mblab report --check FILE` makes the report again and compares it with `FILE`, ignoring
+only the generation time and the lines naming the code; it writes nothing and exits with
+status 1 when anything else differs. Without `--check`, `mblab report` does not replace an
+existing report whose content differs unless `--force` is given, so following a
+reproduction recipe cannot overwrite the report being checked.
+
 ## 11. Threats to validity
 
 - **Construct:** a displayed label is not ground truth; accuracy and time are proxies

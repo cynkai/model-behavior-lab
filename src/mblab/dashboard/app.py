@@ -26,7 +26,6 @@ import pandas as pd
 import streamlit as st
 from pydantic import ValidationError
 
-from mblab import __version__
 from mblab.analysis import LABEL_CLASS_TEXT, Analysis, analyze, hypothesis_tallies
 from mblab.dashboard import PAGES, charts
 from mblab.demo import DEMO_BANNER
@@ -47,6 +46,7 @@ from mblab.formatting import (
     tokens,
 )
 from mblab.pilot import PILOT_BANNER
+from mblab.provenance import code_version
 from mblab.records import build_record, condition_instructions, next_pending, parse_decimal
 from mblab.report import scoring_text
 from mblab.stats import Interval
@@ -816,7 +816,7 @@ def page_methodology(study: Study, a: Analysis) -> None:
             [
                 ["definition SHA-256", d.sha256()],
                 ["plan seed / strategy", f"{a.plan.seed} / {a.plan.strategy}" if a.plan else "—"],
-                ["tool version", f"model-behavior-lab {__version__}"],
+                ["code", f"model-behavior-lab {code_version().label()}"],
                 ["study directory", str(study.root.resolve())],
             ],
             columns=["item", "value"],
@@ -855,7 +855,7 @@ def main() -> None:
             st.error("SYNTHETIC DEMO DATA")
         else:
             st.caption(f"{len(analysis.results)} observed records")
-        st.caption(f"model-behavior-lab {__version__}")
+        st.caption(f"model-behavior-lab {code_version().label()}")
     RENDERERS[page](study, analysis)
 
 

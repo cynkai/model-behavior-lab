@@ -6,6 +6,7 @@ Nothing here touches the network or needs a real key: ``fake_sdk`` is put in
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -685,8 +686,14 @@ def test_unrecorded_responses_appear_in_limitations(api_study, fake):
     fake.client.script = [make_response(status="in_progress"), make_response()]
     _send(api_study, fake, limit=1)
     _send(api_study, fake, limit=2)  # the held run is skipped, the next one is recorded
-    a = analyze(Study.load(api_study))
+    study = Study.load(api_study)
+    a = analyze(study)
     assert any("could not be recorded" in lim.text for lim in a.limitations)
+    # The log changes the report, so the report names its hash and asks for the file.
+    text = render_report(a, study, now=FIXED_NOW)
+    digest = hashlib.sha256((api_study / api_runner.UNRECORDED_FILE).read_bytes()).hexdigest()
+    assert f"| api-unrecorded.jsonl SHA-256 | `{digest}` |" in text
+    assert "and `api-unrecorded.jsonl` if present" in text
 
 
 def test_ctrl_c_waits_until_the_record_is_written(api_study, fake, monkeypatch):

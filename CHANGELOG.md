@@ -9,6 +9,8 @@
 - Existing reports keep their modification times on identical reruns. Before writing, the
   command checks all selected reports for conflicts. Use `--report ID --force` to replace
   a differing archive. Verification flags a file with invalid UTF-8 as a mismatch.
+- Report paths are checked together so an alias in the benchmark definition cannot
+  redirect a selected report over another archive. Output paths must stay inside the benchmark.
 - Benchmark count scoring compares the recorded decimal value exactly, including multiple
   candidate numbers in one answer. Tables and chart tooltips preserve that value even when
   the plotted coordinate has to be rounded.

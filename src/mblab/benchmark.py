@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import shlex
 import sys
@@ -39,6 +40,7 @@ from fractions import Fraction
 from pathlib import Path, PurePosixPath
 from types import ModuleType
 from typing import Any, ClassVar, Literal
+from unicodedata import normalize
 
 import pandas as pd
 import yaml
@@ -81,6 +83,9 @@ BENCHMARK_FILE = "benchmark.yaml"
 RUNS_FILE = "runs.jsonl"
 #: Where the repository keeps its benchmarks (used in the commands a report prints).
 BENCHMARKS_DIR = "benchmarks"
+
+# Darwin's <sys/unistd.h>; Python does not expose this name in os.pathconf_names.
+_DARWIN_PC_CASE_SENSITIVE = 11
 
 #: Verifiers by name. Each computes the ground truth of one kind of task on its own and
 #: offers ``ground_truth()``, ``parse_order()``, ``violations()``, ``breakdown()`` and
@@ -192,7 +197,7 @@ class BenchmarkDefinition(VersionedModel):
         for kind, ids in (
             ("answer", [a.id for a in self.task.answers]),
             ("report", [r.id for r in self.reports]),
-            ("report path", [r.path for r in self.reports]),
+            ("report path", [str(Path(r.path)) for r in self.reports]),
         ):
             for value, n in Counter(ids).items():
                 if n > 1:
@@ -1493,10 +1498,66 @@ def report_path(benchmark: Benchmark, spec: ReportSpec) -> Path:
     return benchmark.root / spec.path
 
 
+def _validate_report_paths(benchmark: Benchmark) -> None:
+    """Reject aliases and conflicting file/directory destinations before report I/O."""
+    destinations: dict[tuple[int, int, str], str] = {}
+    case_destinations: dict[tuple[int, int, str], str] = {}
+    resolved_destinations: dict[Path, str] = {}
+    root = benchmark.root.resolve()
+    for spec in benchmark.definition.reports:
+        path = report_path(benchmark, spec)
+        resolved = path.resolve()
+        if not resolved.is_relative_to(root):
+            raise StudyError(f"report '{spec.id}': path must stay inside the benchmark directory")
+        for previous, previous_spec in resolved_destinations.items():
+            if resolved in previous.parents or previous in resolved.parents:
+                raise StudyError(
+                    f"conflicting report paths: '{spec.path}' and '{previous_spec}': "
+                    "a report file cannot be another report's directory"
+                )
+        # Atomic writes replace the final directory entry, not its symlink target.
+        destination = path.parent.resolve() / path.name
+        ancestor = destination.parent
+        while not ancestor.exists():
+            ancestor = ancestor.parent
+        if not ancestor.is_dir():
+            raise StudyError(f"report '{spec.id}': ancestor '{ancestor}' is not a directory")
+        stat = ancestor.stat()
+        relative = os.path.normcase(str(destination.relative_to(ancestor)))
+        if sys.platform == "darwin":
+            relative = normalize("NFD", relative)
+        key = (stat.st_dev, stat.st_ino, relative)
+        duplicate = destinations.get(key) or resolved_destinations.get(resolved)
+        if sys.platform == "darwin":
+            folded = normalize("NFD", relative.casefold())
+            case_key = (stat.st_dev, stat.st_ino, folded)
+            possible_alias = case_destinations.get(case_key)
+            if duplicate is None and possible_alias is not None:
+                try:
+                    case_sensitive = os.pathconf(ancestor, _DARWIN_PC_CASE_SENSITIVE)
+                except (OSError, ValueError) as exc:
+                    raise StudyError(
+                        f"report '{spec.id}': cannot determine filesystem case sensitivity: {exc}"
+                    ) from exc
+                if case_sensitive < 0:
+                    raise StudyError(f"report '{spec.id}': filesystem case sensitivity is unknown")
+                if case_sensitive == 0:
+                    duplicate = possible_alias
+            case_destinations[case_key] = spec.path
+        if duplicate is not None:
+            raise StudyError(
+                f"duplicate report path: '{spec.path}' and '{duplicate}' "
+                "refer to the same destination"
+            )
+        destinations[key] = spec.path
+        resolved_destinations[resolved] = spec.path
+
+
 def make_reports(
     benchmark: Benchmark, report_id: str | None = None
 ) -> list[tuple[ReportSpec, str]]:
     """Render the named report, or all declared reports, from their respective batches."""
+    _validate_report_paths(benchmark)
     specs = (
         benchmark.definition.reports if report_id is None else [benchmark.report_spec(report_id)]
     )

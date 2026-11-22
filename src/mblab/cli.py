@@ -1397,7 +1397,7 @@ def benchmark_show(
                  "Second order", "Full success", "Error"):  # fmt: skip
         table.add_column(name)
     for row in runs_frame(ev).itertuples():
-        count = "—" if pd.isna(row.count_given) else f"{row.count_given:g}"
+        count = "—" if pd.isna(row.count_given) else str(row.count_given).removesuffix(".0")
         table.add_row(
             escape(row.run_id),
             escape(row.default_selection),
@@ -1443,24 +1443,28 @@ def benchmark_report(
         bool,
         typer.Option("--check", help="Make the reports again and compare; write nothing."),
     ] = False,
+    report_id: Annotated[
+        str | None, typer.Option("--report", help="Write or check only this report ID.")
+    ] = None,
 ) -> None:
     """Write the reports benchmark.yaml lists; each covers the runs of its batches."""
     b = Benchmark.load(directory)
-    reports = make_reports(b)
-    if not reports:
+    if not b.definition.reports and report_id is None:
         raise StudyError(f"{BENCHMARK_FILE} lists no reports")
     if not check:
-        for path in write_reports(b):
+        for path in write_reports(b, report_id):
             console.print(f"Wrote {escape(str(path))}.")
         return
     differing = 0
-    for spec, text in reports:
+    for spec, text in make_reports(b, report_id):
         path = report_path(b, spec)
         if not path.is_file():
             console.print(f"[red]{escape(str(path))} not found[/]")
             differing += 1
             continue
-        comparison = compare_reports(path.read_text(encoding="utf-8", errors="replace"), text)
+        comparison = compare_reports(
+            path.read_text(encoding="utf-8", errors="replace"), text, ignore_volatile=False
+        )
         if comparison.same:
             console.print(f"[green]{escape(str(path))} matches the report made now.[/]")
             continue

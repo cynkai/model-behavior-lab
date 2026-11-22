@@ -151,7 +151,7 @@ mblab report -s my-study
 | `mblab report` | Markdown 보고서(`reports/report.md`). 내용이 다른 기존 보고서는 `--force` 없이 덮어쓰지 않고, `--check FILE`은 파일을 쓰지 않고 기존 보고서와 새로 만든 보고서를 비교 |
 | `mblab dashboard` | 실험 또는 벤치마크 디렉터리의 로컬 웹 대시보드(`dashboard` 추가 설치 필요) |
 | `mblab demo DIR` | 합성 데모 실험 생성 |
-| `mblab benchmark show DIR` / `mblab benchmark report DIR [--check]` | 벤치마크의 정답을 다시 계산해 실행을 채점하고, `benchmark.yaml`에 적힌 보고서를 쓰거나 `--check`로 비교 |
+| `mblab benchmark show DIR [--batch NAME]` / `mblab benchmark report DIR [--report ID] [--check]` | 선택한 회차의 실행을 채점합니다. 보고서 ID를 지정하면 해당 보고서만 생성하거나 검증하고, 생략하면 전체를 처리합니다. |
 
 ## 실험 디렉터리
 

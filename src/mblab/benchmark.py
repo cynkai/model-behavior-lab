@@ -28,16 +28,26 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import shlex
 from collections import Counter
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date
+from fractions import Fraction
 from pathlib import Path, PurePosixPath
 from types import ModuleType
 from typing import Any, ClassVar, Literal
 
 import pandas as pd
 import yaml
-from pydantic import AwareDatetime, Field, ValidationError, model_validator
+from pydantic import (
+    AwareDatetime,
+    Field,
+    SerializerFunctionWrapHandler,
+    ValidationError,
+    model_serializer,
+    model_validator,
+)
 
 from mblab import task_ordering
 from mblab.analysis import _find_reference
@@ -50,14 +60,13 @@ from mblab.schema import (
     Hypothesis,
     Identifier,
     LatencyMethod,
-    NumericScoring,
     SelectionOption,
     StrictModel,
-    Task,
     VersionedModel,
+    _drop_unset,
     condition_problems,
 )
-from mblab.scoring import extract_answer, score_automatic, strip_markdown_edges
+from mblab.scoring import extract_answer, parse_single_number, strip_markdown_edges
 from mblab.study import StudyError, atomic_write_text, format_validation_error, read_jsonl
 
 BENCHMARK_FILE = "benchmark.yaml"
@@ -124,6 +133,14 @@ class ReportSpec(StrictModel):
     title: str = Field(min_length=1)
     batches: list[Identifier] = Field(min_length=1)
     path: str = Field(min_length=1, description="Where the report is written, in this directory.")
+    reproduction_scope: Literal["benchmark", "report"] | None = Field(
+        default=None,
+        description="Use 'benchmark' to preserve the all-runs commands in a published report.",
+    )
+
+    @model_serializer(mode="wrap")
+    def _serialize(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        return _drop_unset(handler(self), "reproduction_scope")
 
 
 class BenchmarkDefinition(VersionedModel):
@@ -140,6 +157,9 @@ class BenchmarkDefinition(VersionedModel):
     documented_facts: list[DocumentedFact] = Field(default_factory=list)
     not_observable: list[str] = Field(default_factory=list)
     not_recorded: list[str] = Field(default_factory=list)
+    notes_batches: list[Identifier] | None = Field(
+        default=None, min_length=1, description="Batches described by not_recorded and planned."
+    )
     selection_options: list[SelectionOption] = Field(min_length=1)
     conditions: list[Condition] = Field(min_length=1)
     task: BenchmarkTask
@@ -147,6 +167,10 @@ class BenchmarkDefinition(VersionedModel):
         default_factory=list, description="Further runs that are planned (not results)."
     )
     reports: list[ReportSpec] = Field(default_factory=list)
+
+    @model_serializer(mode="wrap")
+    def _serialize(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        return _drop_unset(handler(self), "notes_batches")
 
     @model_validator(mode="after")
     def _check(self) -> BenchmarkDefinition:
@@ -326,6 +350,9 @@ def run_problems(definition: BenchmarkDefinition, runs: list[BenchmarkRun]) -> l
             except KeyError:
                 problems.append(f"{where}: unknown breakdown key '{key_name}'")
     batches = {run.batch for run in runs}
+    for batch in definition.notes_batches or []:
+        if batch not in batches:
+            problems.append(f"notes_batches lists batch '{batch}', which has no runs")
     for spec in definition.reports:
         for batch in spec.batches:
             if batch not in batches:
@@ -409,7 +436,6 @@ def _read_order(answer: str, verifier: ModuleType) -> tuple[str | None, str]:
 def _check_one(
     field: AnswerField,
     text: str,
-    task: BenchmarkTask,
     verifier: ModuleType,
     truth: Any,
     own_first: str | None,
@@ -419,22 +445,17 @@ def _check_one(
     if answer is None:
         return AnswerResult(field, None, None, False, False, detail)
     if field.check == "count":
-        rule = Task(
-            id=task.id,
-            title=task.title,
-            prompt=task.prompt,
-            reference_answer=str(truth.count),
-            scoring=NumericScoring(
-                method="numeric", expected=truth.count, answer_label=field.label
-            ),
-        )
-        scored = score_automatic(rule, line)
-        value: int | float | None = None
-        if scored.status == "scored" and scored.canonical is not None:
-            number = float(scored.canonical)
-            value = int(number) if number.is_integer() else number
+        number, why = parse_single_number(answer)
+        if number is None:
+            return AnswerResult(field, answer, None, False, False, why)
+        value = int(number) if number.is_integer() else number
         return AnswerResult(
-            field, answer, value, scored.status == "scored", bool(scored.correct), scored.detail
+            field,
+            answer,
+            value,
+            True,
+            value == truth.count,
+            f"read {value}; expected {truth.count}",
         )
     order, why = _read_order(answer, verifier)
     if order is None:
@@ -465,9 +486,9 @@ def check_answers(
     ordered = sorted(task.answers, key=lambda f: f.check == "other_valid_order")
     for field in ordered:
         if field.id not in values:
-            results[field.id] = AnswerResult(field, None, None, False, False, "not recorded")
+            results[field.id] = AnswerResult(field, None, None, False, False, "no answer available")
             continue
-        result = _check_one(field, values[field.id], task, verifier, truth, own_first)
+        result = _check_one(field, values[field.id], verifier, truth, own_first)
         if field.check == "lexicographic_first" and isinstance(result.value, str):
             own_first = result.value
         results[field.id] = result
@@ -553,9 +574,11 @@ class RunResult:
         if count is not None and not count.correct and isinstance(count.value, int | float):
             diff = count.value - truth.count
             parts.append(
-                f"count {count.value:g} instead of {truth.count} "
+                f"count {count.value} instead of {truth.count} "
                 f"({abs(diff):g} {'more' if diff > 0 else 'fewer'})"
             )
+        elif count is not None and not count.correct:
+            parts.append(f"count: {count.detail}")
         for result in self.answers:
             if not result.correct and result.field.check != "count":
                 parts.append(f"{result.field.id}: {result.detail}")
@@ -613,6 +636,16 @@ class Evaluation:
     @property
     def partials(self) -> int:
         return sum(r.partial for r in self.runs)
+
+    @property
+    def valid_order_answers(self) -> int:
+        """Count valid permutations in the two order fields, independent of rank or repetition."""
+        return sum(
+            answer.value in self.truth.orders
+            for r in self.runs
+            for answer in r.answers
+            if answer.field.check in {"lexicographic_first", "other_valid_order"}
+        )
 
     def correct(self, check: str) -> tuple[int, int]:
         """(correct, runs) for one answer check."""
@@ -682,7 +715,7 @@ def _counts_text(results: list[RunResult]) -> str:
     values = []
     for r in results:
         count = r.answer("count")
-        values.append("—" if count is None or count.value is None else f"{count.value:g}")
+        values.append("—" if count is None or count.value is None else str(count.value))
     return ", ".join(values)
 
 
@@ -690,10 +723,14 @@ def compare_conditions(
     definition: BenchmarkDefinition, runs: tuple[RunResult, ...], truth: Any
 ) -> list[Comparison]:
     """Each per-message condition next to its reference conditions, as in a study's override
-    assessment but descriptive: equal outcomes are reported as equal, nothing is tested."""
+    assessment but descriptive: compare the observed proportions of fully correct runs."""
     by_condition: dict[str, list[RunResult]] = {}
     for r in runs:
         by_condition.setdefault(r.condition.id, []).append(r)
+    success_rates = {
+        cid: Fraction(sum(r.full_success for r in group), len(group))
+        for cid, group in by_condition.items()
+    }
 
     def describe(cid: str) -> str:
         cond = definition.condition(cid)
@@ -702,21 +739,22 @@ def compare_conditions(
             return f"{cid} (default {default}, no per-message selection)"
         return f"{cid} (default {default}, per-message {definition.option_label(cond.message_override)})"
 
-    def same(a: str, b: str) -> bool:
-        ra, rb = by_condition[a], by_condition[b]
-        return len(ra) == len(rb) and sum(r.full_success for r in ra) == sum(
-            r.full_success for r in rb
-        )
-
     def wrong_counts(a: str, b: str) -> str:
         ra, rb = by_condition[a], by_condition[b]
-        if any(r.full_success for r in ra + rb):
+        counts = (r.answer("count") for group in (ra, rb) for r in group)
+        if any(count is None or not count.readable or count.correct for count in counts):
             return ""
+        counts_a, counts_b = _counts_text(ra), _counts_text(rb)
+        if len(ra) != 1 or len(rb) != 1:
+            return (
+                f" Every reported count was wrong. {a} gave {counts_a} and {b} gave {counts_b}. "
+                f"The verified count is {truth.count}."
+            )
         return (
             f" Both answered the count wrongly, with different values: {a} gave "
-            f"{_counts_text(ra)} and {b} gave {_counts_text(rb)} (verified: {truth.count})."
-            if _counts_text(ra) != _counts_text(rb)
-            else f" Both gave the same wrong count ({_counts_text(ra)})."
+            f"{counts_a} and {b} gave {counts_b} (verified: {truth.count})."
+            if counts_a != counts_b
+            else f" Both gave the same wrong count ({counts_a})."
         )
 
     out: list[Comparison] = []
@@ -740,21 +778,24 @@ def compare_conditions(
                 )
             )
             continue
+        single = all(len(by_condition[c]) == 1 for c in involved)
+        metric = "outcome" if single else "observed full-task success rate"
         n_note = (
             "With one run per condition this describes single responses; it is not a test "
             "and not evidence of which model produced them."
-            if all(len(by_condition[c]) == 1 for c in involved)
+            if single
             else "This describes these runs only; it is not a test."
         )
         if stacked:
             hyp = ", ".join(definition.hypothesis_for(cond, "no_difference"))
             label = definition.option_label(cond.model_selection)
-            if same(cond.id, dref):
+            if success_rates[cond.id] == success_rates[dref]:
+                gain = "gain" if single else "gain in full-task success rate"
                 text = (
-                    f"{describe(cond.id)} and {describe(dref)} have the same outcome "
+                    f"{describe(cond.id)} and {describe(dref)} have the same {metric} "
                     f"({_outcome_text(by_condition[cond.id])}; {_outcome_text(by_condition[dref])}), "
                     f"with counts {_counts_text(by_condition[cond.id])} and "
-                    f"{_counts_text(by_condition[dref])}. No gain from choosing {label} twice was "
+                    f"{_counts_text(by_condition[dref])}. No {gain} from choosing {label} twice was "
                     "observed"
                     + (f", which is consistent with {hyp}" if hyp else "")
                     + ". Not seeing a difference does not show that the two settings are the "
@@ -764,7 +805,7 @@ def compare_conditions(
                 pattern = "no_difference"
             else:
                 text = (
-                    f"{describe(cond.id)} and {describe(dref)} have different outcomes "
+                    f"{describe(cond.id)} and {describe(dref)} have different {metric}s "
                     f"({_outcome_text(by_condition[cond.id])}; {_outcome_text(by_condition[dref])})."
                     f" {n_note}"
                 )
@@ -777,27 +818,27 @@ def compare_conditions(
             f"{_outcome_text(by_condition[oref])}, the default reference {describe(dref)} had "
             f"{_outcome_text(by_condition[dref])}"
         )
-        if same(oref, dref):
+        if success_rates[oref] == success_rates[dref]:
             pattern = "references_alike"
             text = (
                 f"{describe(cond.id)} had {_outcome_text(by_condition[cond.id])}; {refs}. The two "
-                "references have the same outcome, so this comparison cannot tell the patterns "
+                f"references have the same {metric}, so this comparison cannot tell the patterns "
                 f"apart. {n_note}"
             )
-        elif same(cond.id, oref):
+        elif success_rates[cond.id] == success_rates[oref]:
             pattern = "per_message"
             hyp = ", ".join(definition.hypothesis_for(cond, "per_message"))
             text = (
-                f"{describe(cond.id)} has the same outcome as {oref}: {_outcome_text(by_condition[cond.id])}"
+                f"{describe(cond.id)} has the same {metric} as {oref}: {_outcome_text(by_condition[cond.id])}"
                 f"; {refs}. This is consistent with the per-message selection being applied"
                 + (f" ({hyp})" if hyp else "")
                 + f", but it is not direct evidence for it.{wrong_counts(cond.id, oref)} {n_note}"
             )
-        elif same(cond.id, dref):
+        elif success_rates[cond.id] == success_rates[dref]:
             pattern = "default"
             hyp = ", ".join(definition.hypothesis_for(cond, "default"))
             text = (
-                f"{describe(cond.id)} has the same outcome as {dref}: {_outcome_text(by_condition[cond.id])}"
+                f"{describe(cond.id)} has the same {metric} as {dref}: {_outcome_text(by_condition[cond.id])}"
                 f"; {refs}. This is consistent with the default selection being applied"
                 + (f" ({hyp})" if hyp else "")
                 + f", but it is not direct evidence for it.{wrong_counts(cond.id, dref)} {n_note}"
@@ -806,7 +847,7 @@ def compare_conditions(
             pattern = "neither"
             text = (
                 f"{describe(cond.id)} had {_outcome_text(by_condition[cond.id])}; {refs}. Its "
-                f"outcome matches neither reference. {n_note}"
+                f"{metric} matches neither reference. {n_note}"
             )
         out.append(Comparison(cond.id, False, dref, oref, pattern, text))
     return out
@@ -917,11 +958,32 @@ def _values(runs: list[BenchmarkRun], name: str) -> str:
     return ", ".join(values) + (" (not recorded for some runs)" if missing else "")
 
 
+@dataclass(frozen=True, slots=True)
+class RecordingCoverage:
+    """Availability of measurements in the runs selected for a report or dashboard."""
+
+    full_responses: int
+    timestamps: int
+    run_orders: int
+    latencies: int
+
+    @classmethod
+    def from_runs(cls, runs: Sequence[BenchmarkRun]) -> RecordingCoverage:
+        return cls(
+            sum(r.raw_response is not None for r in runs),
+            sum(r.timestamp is not None for r in runs),
+            sum(r.run_order is not None for r in runs),
+            sum(r.latency_seconds is not None for r in runs),
+        )
+
+
 def render_report(ev: Evaluation, spec: ReportSpec) -> str:
     d = ev.definition
     task = d.task
     truth = ev.truth
     runs = [r.run for r in ev.runs]
+    coverage = RecordingCoverage.from_runs(runs)
+    has_repetitions = any(r.repetition > 1 for r in runs)
     dates = sorted({r.recorded_on.isoformat() for r in runs})
     n_cond = len({r.condition.id for r in ev.runs})
     count_ok, n = ev.correct("count")
@@ -930,15 +992,19 @@ def render_report(ev: Evaluation, spec: ReportSpec) -> str:
     failed = [r for r in ev.runs if not r.full_success]
     out: list[str] = [f"# {spec.title}", ""]
 
-    only_counts = failed and all(r.error_type(truth).startswith("count") for r in failed)
-    miscounts = ", ".join(f"{r.condition.id}: {_counts_text([r])}" for r in failed)
+    only_counts = (
+        bool(failed)
+        and first_ok == other_ok == n
+        and all((count := r.answer("count")) is not None and count.readable for r in failed)
+    )
     abstract = (
         f"One constraint-reasoning task ({task.title.lower()}) was sent with the same prompt in "
-        f"the {d.platform} under {n_cond} combinations of the default model selection and the "
+        f"the {d.platform} under {n_cond} combination{'' if n_cond == 1 else 's'} of the default model selection and the "
         f"per-message selection (long-press on send). {_pct(ev.full_successes, n)} responses "
         "answered all three parts correctly."
     )
     if only_counts:
+        miscounts = ", ".join(f"{r.condition.id}: {_counts_text([r])}" for r in failed)
         abstract += (
             f" The other {len(failed)} gave a correct first order and a valid second order but "
             f"miscounted the valid orders ({miscounts})."
@@ -950,12 +1016,29 @@ def render_report(ev: Evaluation, spec: ReportSpec) -> str:
     )
     shorts = " ".join(s for s in (_short(c) for c in ev.comparisons) if s)
     if shorts:
+        if n > n_cond:
+            abstract += " The comparisons use the observed full-task success rate."
         abstract += " " + shorts
-    abstract += " With so few runs, none of this is evidence about which model produced a response."
+    abstract += (
+        " The recorded answers cannot identify the model behind a response."
+        if has_repetitions
+        else " With so few runs, none of this is evidence about which model produced a response."
+    )
     per_condition = ev.runs_per_condition()
+    run_noun = "run" if n == 1 else "runs"
+    condition_count = (
+        f"{n_cond} of {len(d.conditions)} conditions represented"
+        if n_cond < len(d.conditions)
+        else f"{n_cond} {'condition' if n_cond == 1 else 'conditions'}"
+    )
+    distribution = (
+        f"{per_condition} per defined condition"
+        if n_cond < len(d.conditions)
+        else f"{per_condition} run{'' if per_condition == '1' else 's'} each"
+    )
     out += [
-        f"> **Exploratory, preliminary results.** {n} runs: {n_cond} conditions, "
-        f"{per_condition} run{'' if per_condition == '1' else 's'} each, one task, recorded by hand on "
+        f"> **Exploratory, preliminary results.** {n} {run_noun}: {condition_count}, "
+        f"{distribution}, one task, recorded by hand on "
         f"{', '.join(dates)}. The figures describe these runs only. They are not a measure of "
         "any model's or setting's accuracy, and no statistical test was run.",
         "",
@@ -978,23 +1061,32 @@ def render_report(ev: Evaluation, spec: ReportSpec) -> str:
         out += [f"  - {p}" for p in h.predictions]
     out += [
         "",
-        "The hypotheses are stated, not tested: with this many runs the report only describes "
-        "which pattern the outcomes match.",
+        "The comparisons describe the recorded outcomes. No hypothesis test was performed."
+        if has_repetitions
+        else "The hypotheses are stated, not tested: with this many runs the report only "
+        "describes which pattern the outcomes match.",
         "",
         "## Experimental Setup",
         "",
     ]
-    new_chat = {r.new_conversation for r in runs}
+    chat_counts = Counter(r.new_conversation for r in runs)
+    if chat_counts[True] == n:
+        chats = "a new chat for every run"
+    elif chat_counts[False] == n:
+        chats = "ongoing chat for every run"
+    elif chat_counts[None] == n:
+        chats = "not recorded"
+    else:
+        chats = (
+            f"new {chat_counts[True]}, ongoing {chat_counts[False]}, unrecorded {chat_counts[None]}"
+        )
     setup = [
         ["Service", d.service],
         ["Client", d.platform],
         ["Execution", "by hand: the experimenter operated the app and recorded what it returned"],
         ["Recorded on", ", ".join(dates)],
         ["Batches", ", ".join(ev.batches)],
-        [
-            "Conversation",
-            "a new chat for every run" if new_chat == {True} else "not recorded for every run",
-        ],
+        ["Conversation", chats],
         ["Prompt", f"the same text for every run (SHA-256 `{task.prompt_sha256()[:16]}…`)"],
         ["Device", _values(runs, "device_type")],
         ["Device model", _values(runs, "device_model")],
@@ -1003,21 +1095,21 @@ def render_report(ev: Evaluation, spec: ReportSpec) -> str:
         [
             "Run order and times",
             "not recorded"
-            if all(r.run_order is None and r.timestamp is None for r in runs)
-            else "see runs.jsonl",
+            if not coverage.run_orders and not coverage.timestamps
+            else f"run order {coverage.run_orders}/{n}, send time {coverage.timestamps}/{n} (see {RUNS_FILE})",
         ],
         [
             "Response times",
             "not recorded"
-            if all(r.latency_seconds is None for r in runs)
-            else "recorded for some runs",
+            if not coverage.latencies
+            else f"recorded for {coverage.latencies} of {n} {run_noun}",
         ],
         ["Model label shown by the app", _values(runs, "observed_model_label")],
         [
             "Full response texts",
             "not kept: the runs hold the experimenter's structured summaries"
-            if all(r.raw_response is None for r in runs)
-            else "kept for some runs",
+            if not coverage.full_responses
+            else f"kept for {coverage.full_responses} of {n} {run_noun}",
         ],
     ]
     out += [md_table(["Item", "Value"], setup), "", "Conditions:", ""]
@@ -1043,8 +1135,18 @@ def render_report(ev: Evaluation, spec: ReportSpec) -> str:
         "the model that produced a response.",
         "",
     ]
-    if d.not_recorded:
-        out += ["Not recorded:", ""] + [f"- {item}" for item in d.not_recorded] + [""]
+    selected_batches = set(ev.batches)
+    notes_apply = d.notes_batches is not None and selected_batches.issubset(d.notes_batches)
+    notes_source = (
+        f"the benchmark definition for {', '.join(d.notes_batches)}"
+        if d.notes_batches
+        else "the benchmark definition (batch unspecified)"
+    )
+    if d.not_recorded and (
+        d.notes_batches is None or not selected_batches.isdisjoint(d.notes_batches)
+    ):
+        heading = "Not recorded:" if notes_apply else f"Recording gaps listed in {notes_source}"
+        out += [heading, ""] + [f"- {item}" for item in d.not_recorded] + [""]
 
     out += ["## Benchmark Task", ""]
     meta = [f"**{task.title}**"]
@@ -1108,13 +1210,26 @@ def render_report(ev: Evaluation, spec: ReportSpec) -> str:
             f"{truth.count} valid orders, so it does not change the answer.",
             "",
         ]
-    out += [
-        "## Observations",
-        "",
-        "What each response gave, as recorded by the experimenter. The full response texts were "
-        "not kept; the notes under the table are the experimenter's summaries, verbatim.",
-        "",
-    ]
+    if coverage.full_responses == 0:
+        observations = (
+            "What each response gave, as recorded by the experimenter. The full response texts "
+            "were not kept"
+        )
+        observations += (
+            "; the notes under the table are the experimenter's summaries, verbatim."
+            if any(r.solution_summary for r in runs)
+            else "."
+        )
+    else:
+        observations = (
+            f"Answers were read from the full response text in `{RUNS_FILE}` for "
+            f"{coverage.full_responses} of {n} {run_noun}."
+        )
+        if coverage.full_responses < n:
+            observations += " The remaining answers were read from the recorded answer fields."
+        if any(r.solution_summary for r in runs):
+            observations += " The notes under the table are the experimenter's summaries, verbatim."
+    out += ["## Observations", "", observations, ""]
     frame = runs_frame(ev)
     out += [
         md_table(
@@ -1174,12 +1289,13 @@ def render_report(ev: Evaluation, spec: ReportSpec) -> str:
                 ["Exact count", _pct(count_ok, n)],
                 ["Lexicographically first order", _pct(first_ok, n)],
                 ["Second valid order", _pct(other_ok, n)],
-                ["Valid orders given (both order answers)", _pct(first_ok + other_ok, 2 * n)],
+                ["Valid orders given (both order answers)", _pct(ev.valid_order_answers, 2 * n)],
             ],
         ),
         "",
-        f"{_share(ev.full_successes, n)} describes {n} runs of one task under {n_cond} different "
-        "settings. It is not the accuracy of any model or setting, and the runs are not a "
+        f"{_share(ev.full_successes, n)} describes {n} {run_noun} of one task under "
+        f"{'1 setting' if n_cond == 1 else f'{n_cond} different settings'}. "
+        "It is not the accuracy of any model or setting, and the runs are not a "
         "sample from one population.",
         "",
         "### Comparisons",
@@ -1213,7 +1329,10 @@ def render_report(ev: Evaluation, spec: ReportSpec) -> str:
         "## Error Analysis",
         "",
         "Where each wrong answer came from, traced by comparing the intermediate counts in the "
-        "experimenter's summary with the verifier's values.",
+        "experimenter's summary with the verifier's values."
+        if only_counts and all(any(not c.matches for c in r.breakdown) for r in failed)
+        else "The table lists each answer that failed its check and any recorded intermediate "
+        "counts that differ from the verifier.",
         "",
         md_table(
             ["Run", "Condition", "Error type", "Detail"],
@@ -1238,20 +1357,43 @@ def render_report(ev: Evaluation, spec: ReportSpec) -> str:
         ]
 
     out += ["## Limitations", ""]
-    out += [
-        f"- {n} runs, {ev.runs_per_condition()} per condition, one task: no interval, test, or "
-        "generalisation to other tasks, prompts, or days is possible.",
-        "- The answers come from the experimenter's structured summaries; the response texts "
-        "were not kept and cannot be checked again."
-        if all(r.raw_response is None for r in runs)
-        else "- Some answers come from the experimenter's summaries rather than the response text.",
+    condition_basis = "defined condition" if n_cond < len(d.conditions) else "condition"
+    if has_repetitions:
+        out.append(
+            f"- The analysis covers {n} {run_noun} of one task. It reports no intervals or "
+            "hypothesis tests and does not assess generalisation to other tasks, prompts, or days."
+        )
+    else:
+        out.append(
+            f"- {n} {run_noun}, {per_condition} per {condition_basis}, one task: no interval, test, "
+            "or generalisation to other tasks, prompts, or days is possible."
+        )
+    if not coverage.full_responses:
+        out.append(
+            "- The answers come from the experimenter's structured summaries; the response texts "
+            "were not kept and cannot be checked again."
+        )
+    elif coverage.full_responses < n:
+        out.append(
+            f"- Full response texts are missing for {n - coverage.full_responses} of {n} runs. "
+            "Only their recorded answer fields can be checked."
+        )
+    out.append(
         "- Selections are what the experimenter chose in the app. The model or reasoning effort "
-        "behind a response is not observable.",
-        "- Run order and times were not recorded, so a change in the service during the session "
-        "cannot be ruled out."
-        if all(r.timestamp is None for r in runs)
-        else "- Times were not recorded for every run.",
-    ]
+        "behind a response is not observable."
+    )
+    if not coverage.timestamps and not coverage.run_orders:
+        out.append(
+            "- Run order and times were not recorded, so a change in the service during the "
+            "session cannot be ruled out."
+        )
+    else:
+        for measurement, count in (
+            ("Send time", coverage.timestamps),
+            ("Run order", coverage.run_orders),
+        ):
+            if count < n:
+                out.append(f"- {measurement} is missing for {n - count} of {n} {run_noun}.")
     if not d.documented_facts:
         out.append(
             "- No documented facts are recorded: nothing in this report relies on product "
@@ -1262,9 +1404,21 @@ def render_report(ev: Evaluation, spec: ReportSpec) -> str:
         out += [f"- {item}" for item in d.not_observable]
     out += ["", "## Next Experiments", ""]
     if d.planned:
-        out += ["Planned, not yet run (no results exist for them):", ""]
+        heading = (
+            "Planned, not yet run (no results exist for them):"
+            if notes_apply
+            else f"Plans listed in {notes_source}"
+        )
+        out += [heading, ""]
         out += [f"- {item}" for item in d.planned]
         out.append("")
+    directory = f"{BENCHMARKS_DIR}/{ev.benchmark.root.name}"
+    show = ["mblab", "benchmark", "show", directory]
+    check = ["mblab", "benchmark", "report", directory, "--check"]
+    if spec.reproduction_scope != "benchmark":
+        for batch in ev.batches:
+            show.extend(("--batch", batch))
+        check.extend(("--report", spec.id))
     out += [
         f"Further runs are added as new lines of `{RUNS_FILE}` with the next repetition number "
         "and a new batch name; existing lines are not changed. A new report then lists the "
@@ -1282,12 +1436,14 @@ def render_report(ev: Evaluation, spec: ReportSpec) -> str:
         ),
         "",
         "```bash",
-        f"mblab benchmark show {BENCHMARKS_DIR}/{ev.benchmark.root.name}",
-        f"mblab benchmark report {BENCHMARKS_DIR}/{ev.benchmark.root.name} --check",
+        shlex.join(show),
+        shlex.join(check),
         "```",
         "",
         "The first command recomputes the ground truth and scores every run; the second makes "
-        "this report again and compares it with this file without writing anything.",
+        "this report again and compares it with this file without writing anything."
+        if spec.reproduction_scope == "benchmark"
+        else "The first command scores the selected batches. The second checks this report.",
         "",
     ]
     return "\n".join(out)
@@ -1315,17 +1471,19 @@ def report_path(benchmark: Benchmark, spec: ReportSpec) -> Path:
     return benchmark.root / spec.path
 
 
-def make_reports(benchmark: Benchmark) -> list[tuple[ReportSpec, str]]:
-    """Every report ``benchmark.yaml`` lists, rendered from its batches."""
-    return [
-        (spec, render_report(evaluate(benchmark, spec.batches), spec))
-        for spec in benchmark.definition.reports
-    ]
+def make_reports(
+    benchmark: Benchmark, report_id: str | None = None
+) -> list[tuple[ReportSpec, str]]:
+    """Render the named report, or all declared reports, from their respective batches."""
+    specs = (
+        benchmark.definition.reports if report_id is None else [benchmark.report_spec(report_id)]
+    )
+    return [(spec, render_report(evaluate(benchmark, spec.batches), spec)) for spec in specs]
 
 
-def write_reports(benchmark: Benchmark) -> list[Path]:
+def write_reports(benchmark: Benchmark, report_id: str | None = None) -> list[Path]:
     paths = []
-    for spec, text in make_reports(benchmark):
+    for spec, text in make_reports(benchmark, report_id):
         path = report_path(benchmark, spec)
         path.parent.mkdir(parents=True, exist_ok=True)
         atomic_write_text(path, text)

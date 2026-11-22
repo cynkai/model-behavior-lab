@@ -89,6 +89,10 @@ pins the SHA-256 of the six preliminary runs.
 4. Run `mblab benchmark report <dir> --report <new-report-id>` to write that report, then
    add `--check` to verify it. Omit `--report` to process all declared reports.
 
+If a saved report differs, the write command lists the conflict before writing any
+selected report. Run `--report <id> --check` to inspect the differences. To replace
+that report, run `--report <id> --force`. An identical report keeps its modification time.
+
 Earlier reports cover only their own batches, so they do not change when runs are added.
 To inspect one or more batches directly, pass `--batch <name>` to `benchmark show` once
 for each batch. For unequal numbers of repetitions, the comparison uses each condition's

@@ -169,7 +169,7 @@ argument. `mblab <command> --help` lists all options.
 | `mblab report` | Markdown report (`reports/report.md`); never replaces a report with different content unless `--force`, and `--check FILE` compares an existing report with a fresh one instead of writing |
 | `mblab dashboard` | Local web dashboard for a study or a benchmark directory (needs the `dashboard` extra) |
 | `mblab demo DIR` | Create a synthetic demo study |
-| `mblab benchmark show DIR [--batch NAME]` / `mblab benchmark report DIR [--report ID] [--check]` | Score runs in the selected batches. Write or check one named report, or all reports if the ID is omitted. |
+| `mblab benchmark show DIR [--batch NAME]` / `mblab benchmark report DIR [--report ID] [--check or --force]` | Score runs in the selected batches. Write or check one named report, or all reports if the ID is omitted. Replacing a differing report requires `--force`. |
 
 ## Study directory
 

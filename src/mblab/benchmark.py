@@ -67,7 +67,13 @@ from mblab.schema import (
     condition_problems,
 )
 from mblab.scoring import extract_answer, parse_single_number, strip_markdown_edges
-from mblab.study import StudyError, atomic_write_text, format_validation_error, read_jsonl
+from mblab.study import (
+    StudyError,
+    atomic_write_text,
+    format_validation_error,
+    read_jsonl,
+    write_lock,
+)
 
 BENCHMARK_FILE = "benchmark.yaml"
 RUNS_FILE = "runs.jsonl"
@@ -1481,14 +1487,37 @@ def make_reports(
     return [(spec, render_report(evaluate(benchmark, spec.batches), spec)) for spec in specs]
 
 
-def write_reports(benchmark: Benchmark, report_id: str | None = None) -> list[Path]:
-    paths = []
-    for spec, text in make_reports(benchmark, report_id):
-        path = report_path(benchmark, spec)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        atomic_write_text(path, text)
-        paths.append(path)
-    return paths
+def saved_report_text(path: Path) -> str | None:
+    """Read an existing UTF-8 report. A decoding failure is a content mismatch."""
+    try:
+        return path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        return None
+
+
+def write_reports(
+    benchmark: Benchmark, report_id: str | None = None, *, force: bool = False
+) -> list[Path]:
+    """Check every selected archive for conflicts before updating any report."""
+    with write_lock(benchmark.root, "benchmark report"):
+        reports = make_reports(benchmark, report_id)
+        pending: list[tuple[Path, str]] = []
+        for spec, text in reports:
+            path = report_path(benchmark, spec)
+            if path.exists():
+                if not path.is_file():
+                    raise StudyError(f"{path} is not a report file")
+                if saved_report_text(path) == text:
+                    continue
+                if not force:
+                    raise StudyError(
+                        f"{path} already holds a different report. Inspect it with "
+                        f"--report {spec.id} --check or replace it with --report {spec.id} --force."
+                    )
+            pending.append((path, text))
+        for path, text in pending:
+            atomic_write_text(path, text)
+    return [report_path(benchmark, spec) for spec, _ in reports]
 
 
 def dump_run(run: BenchmarkRun) -> str:

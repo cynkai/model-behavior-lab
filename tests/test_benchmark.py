@@ -10,6 +10,7 @@ from datetime import date
 from pathlib import Path
 
 import pytest
+import yaml
 from pydantic import ValidationError
 from typer.testing import CliRunner
 
@@ -503,6 +504,44 @@ def test_report_writes_the_listed_reports(tmp_path):
     assert result.exit_code == 0, result.output
     expected = (BENCH / "reports" / "preliminary.md").read_text(encoding="utf-8")
     assert (root / "reports" / "preliminary.md").read_text(encoding="utf-8") == expected
+
+
+def test_regenerating_reports_preserves_edits_until_forced(tmp_path):
+    root = _copy(tmp_path)
+    archive = root / "reports" / "preliminary.md"
+    expected = archive.read_bytes()
+    original_time = archive.stat().st_mtime_ns
+    args = ["benchmark", "report", str(root)]
+    cli = CliRunner()
+    assert cli.invoke(app, args).exit_code == 0
+    assert archive.stat().st_mtime_ns == original_time
+    archive.write_bytes(b"edited archive\n")
+    # Put the fresh report before the conflicting one to exercise the preflight.
+    manifest = root / BENCHMARK_FILE
+    data = yaml.safe_load(manifest.read_text(encoding="utf-8"))
+    data["reports"].insert(
+        0,
+        {"id": "second", "title": "Second", "batches": [PRELIMINARY], "path": "reports/second.md"},
+    )
+    manifest.write_text(yaml.safe_dump(data, allow_unicode=True), encoding="utf-8")
+    result = cli.invoke(app, args)
+    assert result.exit_code == 2 and "--force" in result.output
+    assert archive.read_bytes() == b"edited archive\n"
+    assert not (root / "reports" / "second.md").exists()
+    assert cli.invoke(app, [*args, "--check", "--force"]).exit_code == 2
+    assert archive.read_bytes() == b"edited archive\n"
+    assert cli.invoke(app, [*args, "--report", "preliminary", "--force"]).exit_code == 0
+    assert archive.read_bytes() == expected
+    assert not (root / "reports" / "second.md").exists()
+
+
+def test_check_reports_invalid_utf8_as_a_difference(tmp_path):
+    root = _copy(tmp_path)
+    archive = root / "reports" / "preliminary.md"
+    archive.write_bytes(b"\xff")
+    result = CliRunner().invoke(app, ["benchmark", "report", str(root), "--check"])
+    assert result.exit_code == 1 and "UTF-8" in result.output
+    assert archive.read_bytes() == b"\xff"
 
 
 def test_report_selection_isolates_the_followup_on_write_and_check(tmp_path, bench):

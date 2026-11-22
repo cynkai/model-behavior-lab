@@ -6,6 +6,9 @@
 
 - `mblab benchmark report DIR --report ID` writes one declared report.
   Add `--check` to compare it with the saved report. Omitting the ID processes every report.
+- Existing reports keep their modification times on identical reruns. Before writing, the
+  command checks all selected reports for conflicts. Use `--report ID --force` to replace
+  a differing archive. Verification flags a file with invalid UTF-8 as a mismatch.
 - Comparisons use the fraction of fully correct runs for each condition, including when
   the number of repetitions differs. Error descriptions distinguish wrong counts, missing
   or unreadable answers, and order errors. The valid-order total checks each permutation

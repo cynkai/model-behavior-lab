@@ -31,6 +31,7 @@ from mblab.benchmark import (
     make_reports,
     report_path,
     runs_frame,
+    saved_report_text,
     write_reports,
 )
 from mblab.clipboard import copy_text, paste_text
@@ -1446,14 +1447,19 @@ def benchmark_report(
     report_id: Annotated[
         str | None, typer.Option("--report", help="Write or check only this report ID.")
     ] = None,
+    force: Annotated[
+        bool, typer.Option("--force", help="Replace selected reports whose content differs.")
+    ] = False,
 ) -> None:
     """Write the reports benchmark.yaml lists; each covers the runs of its batches."""
+    if check and force:
+        raise StudyError("--check writes nothing, so it cannot be combined with --force")
     b = Benchmark.load(directory)
     if not b.definition.reports and report_id is None:
         raise StudyError(f"{BENCHMARK_FILE} lists no reports")
     if not check:
-        for path in write_reports(b, report_id):
-            console.print(f"Wrote {escape(str(path))}.")
+        for path in write_reports(b, report_id, force=force):
+            console.print(f"Report ready: {escape(str(path))}")
         return
     differing = 0
     for spec, text in make_reports(b, report_id):
@@ -1462,9 +1468,12 @@ def benchmark_report(
             console.print(f"[red]{escape(str(path))} not found[/]")
             differing += 1
             continue
-        comparison = compare_reports(
-            path.read_text(encoding="utf-8", errors="replace"), text, ignore_volatile=False
-        )
+        existing = saved_report_text(path)
+        if existing is None:
+            console.print(f"[red]{escape(str(path))} is not valid UTF-8[/]")
+            differing += 1
+            continue
+        comparison = compare_reports(existing, text, ignore_volatile=False)
         if comparison.same:
             console.print(f"[green]{escape(str(path))} matches the report made now.[/]")
             continue

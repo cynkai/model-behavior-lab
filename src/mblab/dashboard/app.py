@@ -907,6 +907,9 @@ def page_benchmark(root: Path) -> None:
     cols[3].metric("Valid orders given", f"{ev.valid_order_answers} of {2 * n}")
 
     frame = runs_frame(ev)
+    frame["count_given"] = frame["count_given"].map(
+        lambda value: None if value is None else str(value)
+    )
     st.subheader("Results by run")
     _table(
         frame[
@@ -942,7 +945,11 @@ def page_benchmark(root: Path) -> None:
     _chart(
         charts.benchmark_count_chart(frame, truth.count, _mode()),
         frame[["run_id", "condition_id", "count_given", "exact_count"]],
-        caption="Each mark shows one run’s numeric answer. The dashed line shows the verified count.",
+        caption=(
+            "Each mark shows one run’s numeric answer. The dashed line shows the verified count. "
+            "Plot positions are approximate; tables and tooltips preserve exact counts. "
+            "Counts outside the finite plotting range appear only in the results table."
+        ),
     )
 
     st.subheader("Default and per-message selection")

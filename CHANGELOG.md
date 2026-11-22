@@ -9,6 +9,9 @@
 - Existing reports keep their modification times on identical reruns. Before writing, the
   command checks all selected reports for conflicts. Use `--report ID --force` to replace
   a differing archive. Verification flags a file with invalid UTF-8 as a mismatch.
+- Benchmark count scoring compares the recorded decimal value exactly, including multiple
+  candidate numbers in one answer. Tables and chart tooltips preserve that value even when
+  the plotted coordinate has to be rounded.
 - Comparisons use the fraction of fully correct runs for each condition, including when
   the number of repetitions differs. Error descriptions distinguish wrong counts, missing
   or unreadable answers, and order errors. The valid-order total checks each permutation

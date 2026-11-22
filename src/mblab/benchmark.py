@@ -29,10 +29,12 @@ import hashlib
 import json
 import re
 import shlex
+import sys
 from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date
+from decimal import Decimal, localcontext
 from fractions import Fraction
 from pathlib import Path, PurePosixPath
 from types import ModuleType
@@ -66,7 +68,7 @@ from mblab.schema import (
     _drop_unset,
     condition_problems,
 )
-from mblab.scoring import extract_answer, parse_single_number, strip_markdown_edges
+from mblab.scoring import extract_answer, parse_single_decimal, strip_markdown_edges
 from mblab.study import (
     StudyError,
     atomic_write_text,
@@ -421,7 +423,7 @@ def is_benchmark_dir(root: Path) -> bool:
 class AnswerResult:
     field: AnswerField
     answer: str | None
-    value: int | float | str | None
+    value: int | Decimal | str | None
     readable: bool
     correct: bool
     detail: str
@@ -451,10 +453,16 @@ def _check_one(
     if answer is None:
         return AnswerResult(field, None, None, False, False, detail)
     if field.check == "count":
-        number, why = parse_single_number(answer)
+        number, why = parse_single_decimal(answer)
         if number is None:
             return AnswerResult(field, answer, None, False, False, why)
-        value = int(number) if number.is_integer() else number
+        # Keep huge integers decimal so reporting cannot hit Python's int-to-string limit.
+        value = (
+            int(number)
+            if number == number.to_integral_value()
+            and number.adjusted() < sys.int_info.str_digits_check_threshold
+            else number
+        )
         return AnswerResult(
             field,
             answer,
@@ -562,7 +570,7 @@ class RunResult:
             if result.correct:
                 continue
             if result.field.check == "count":
-                if not isinstance(result.value, int | float):
+                if not isinstance(result.value, int | Decimal):
                     kinds.append("count unreadable")
                 elif result.value < truth.count:
                     kinds.append("count too low")
@@ -577,11 +585,19 @@ class RunResult:
     def error_detail(self, truth: Any) -> str:
         parts = []
         count = self.answer("count")
-        if count is not None and not count.correct and isinstance(count.value, int | float):
-            diff = count.value - truth.count
+        if count is not None and not count.correct and isinstance(count.value, int | Decimal):
+            number = Decimal(count.value)
+            with localcontext() as context:
+                context.prec = (
+                    max(len(number.as_tuple().digits), len(str(truth.count)))
+                    + abs(number.as_tuple().exponent)
+                    + 1
+                )
+                diff = number - truth.count
+                distance = f"{abs(diff):g}"
             parts.append(
                 f"count {count.value} instead of {truth.count} "
-                f"({abs(diff):g} {'more' if diff > 0 else 'fewer'})"
+                f"({distance} {'more' if diff > 0 else 'fewer'})"
             )
         elif count is not None and not count.correct:
             parts.append(f"count: {count.detail}")
@@ -895,7 +911,7 @@ def runs_frame(ev: Evaluation) -> pd.DataFrame:
                 "error_type": r.error_type(ev.truth),
             }
         )
-    return pd.DataFrame(rows)
+    return pd.DataFrame(rows, dtype=object)
 
 
 def selection_grid(ev: Evaluation) -> pd.DataFrame:

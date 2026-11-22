@@ -21,6 +21,7 @@ from __future__ import annotations
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
+from decimal import Decimal
 from statistics import fmean
 from typing import Literal
 
@@ -125,6 +126,18 @@ def parse_single_number(text: str) -> tuple[float | None, str]:
         return None, "no number in the answer"
     if len(values) > 1:
         shown = ", ".join(f"{v:g}" for v in sorted(values))
+        return None, f"more than one number in the answer ({shown})"
+    return values.pop(), "one number"
+
+
+def parse_single_decimal(text: str) -> tuple[Decimal | None, str]:
+    """Read the numeric rule's human formats without rounding exact benchmark counts."""
+    cleaned = _THOUSANDS_RE.sub("", text)
+    values = {Decimal(m.replace("−", "-")) for m in _NUMBER_RE.findall(cleaned)}
+    if not values:
+        return None, "no number in the answer"
+    if len(values) > 1:
+        shown = ", ".join(str(value) for value in sorted(values))
         return None, f"more than one number in the answer ({shown})"
     return values.pop(), "one number"
 

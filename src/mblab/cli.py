@@ -1398,7 +1398,7 @@ def benchmark_show(
                  "Second order", "Full success", "Error"):  # fmt: skip
         table.add_column(name)
     for row in runs_frame(ev).itertuples():
-        count = "—" if pd.isna(row.count_given) else str(row.count_given).removesuffix(".0")
+        count = "—" if row.count_given is None else str(row.count_given)
         table.add_row(
             escape(row.run_id),
             escape(row.default_selection),

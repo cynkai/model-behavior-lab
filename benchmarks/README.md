@@ -34,7 +34,12 @@ benchmark-001-constraint-reasoning/
   SHA-256 of the prompt, so the prompt cannot be edited after runs exist. `verifier` names
   the code that computes the ground truth; each answer's `reference_answer` must agree with
   it, or the benchmark does not load.
-- `reports`: each report covers the runs of the batches it lists.
+- `reports`: each report covers the runs of the batches it lists. Its reproduction
+  commands select those batches and that report ID. The archived preliminary report sets
+  `reproduction_scope: benchmark` to reproduce its original commands for the whole benchmark.
+- `notes_batches` optionally names the batches that the collection notes in
+  `not_recorded` and the follow-up plans in `planned` describe. Recording coverage in a
+  report or the dashboard is calculated from the selected runs.
 
 **`runs.jsonl`** — one JSON object per line, every key present, `null` where nothing was
 recorded:
@@ -62,6 +67,7 @@ recorded:
 ```bash
 mblab benchmark show benchmarks/benchmark-001-constraint-reasoning
 mblab benchmark report benchmarks/benchmark-001-constraint-reasoning --check
+mblab benchmark report benchmarks/benchmark-001-constraint-reasoning --report preliminary --check
 mblab dashboard -s benchmarks/benchmark-001-constraint-reasoning
 ```
 
@@ -80,7 +86,15 @@ pins the SHA-256 of the six preliminary runs.
    the full response, put it in `raw_response` and the answer lines are read from it.
 3. Add a report to `reports:` in `benchmark.yaml` that lists the batches it covers (for
    the 18-run report: the preliminary batch and the new ones) and its own `path`.
-4. Run `mblab benchmark report <dir>` to write it, then
-   `mblab benchmark report <dir> --check` and the tests.
+4. Run `mblab benchmark report <dir> --report <new-report-id>` to write that report, then
+   add `--check` to verify it. Omit `--report` to process all declared reports.
+
+If a saved report differs, the write command lists the conflict before writing any
+selected report. Run `--report <id> --check` to inspect the differences. To replace
+that report, run `--report <id> --force`. An identical report keeps its modification time.
 
 Earlier reports cover only their own batches, so they do not change when runs are added.
+To inspect one or more batches directly, pass `--batch <name>` to `benchmark show` once
+for each batch. For unequal numbers of repetitions, the comparison uses each condition's
+fraction of fully correct runs and shows both denominators. Equal fractions describe only
+the runs in those batches.

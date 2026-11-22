@@ -63,6 +63,7 @@ not_observable:
   - Whether choosing a setting twice stacks in any way (for example nested reasoning).
   - Whether the account was part of a server-side experiment (A/B test).
 
+notes_batches: [2026-11-22-preliminary]
 not_recorded:
   - The tablet model and its operating system.
   - The ChatGPT app version (build number).
@@ -191,3 +192,4 @@ reports:
     title: "Benchmark 01: ChatGPT Model Selection Override — Preliminary Results"
     batches: [2026-11-22-preliminary]
     path: reports/preliminary.md
+    reproduction_scope: benchmark

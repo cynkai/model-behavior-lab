@@ -36,6 +36,7 @@ from mblab.benchmark import (
     RUNS_FILE,
     Benchmark,
     Evaluation,
+    RecordingCoverage,
     breakdown_frame,
     evaluate,
     is_benchmark_dir,
@@ -878,15 +879,18 @@ def page_benchmark(root: Path) -> None:
     with st.sidebar:
         chosen = batches
         if len(batches) > 1:
-            chosen = st.multiselect("Batches", batches, default=batches, key="batches") or batches
-        st.caption(f"{len(bench.runs)} observed runs (benchmark)")
+            chosen = st.multiselect("Batches", batches, default=batches, key="batches")
+        st.caption(f"{len(bench.runs)} observed runs across all batches")
         st.caption(f"model-behavior-lab {code_version().label()}")
-    ev: Evaluation = evaluate(bench, chosen)
     d = bench.definition
+    st.title(md_text(d.title))
+    if not chosen:
+        st.info("Select a batch to view its results." if batches else "No runs recorded yet.")
+        return
+    ev: Evaluation = evaluate(bench, chosen)
     truth = ev.truth
     n = ev.n_runs
 
-    st.title(md_text(d.title))
     st.info(
         md_text(
             f"Observed data, recorded by hand: {n} runs, {ev.runs_per_condition()} per condition, "
@@ -896,15 +900,16 @@ def page_benchmark(root: Path) -> None:
         icon="🔎",
     )
     count_ok, _ = ev.correct("count")
-    first_ok, _ = ev.correct("lexicographic_first")
-    other_ok, _ = ev.correct("other_valid_order")
     cols = st.columns(4)
     cols[0].metric("Full task success", f"{ev.full_successes} of {n}")
     cols[1].metric("Partially correct", f"{ev.partials} of {n}")
     cols[2].metric("Exact count", f"{count_ok} of {n}")
-    cols[3].metric("Valid orders given", f"{first_ok + other_ok} of {2 * n}")
+    cols[3].metric("Valid orders given", f"{ev.valid_order_answers} of {2 * n}")
 
     frame = runs_frame(ev)
+    frame["count_given"] = frame["count_given"].map(
+        lambda value: None if value is None else str(value)
+    )
     st.subheader("Results by run")
     _table(
         frame[
@@ -941,8 +946,9 @@ def page_benchmark(root: Path) -> None:
         charts.benchmark_count_chart(frame, truth.count, _mode()),
         frame[["run_id", "condition_id", "count_given", "exact_count"]],
         caption=(
-            "Each mark is one run's answer to question (1); the dashed line is the verified "
-            "count. Response times were not recorded, so there is no response-time chart."
+            "Each mark shows one run’s numeric answer. The dashed line shows the verified count. "
+            "Plot positions are approximate; tables and tooltips preserve exact counts. "
+            "Counts outside the finite plotting range appear only in the results table."
         ),
     )
 
@@ -1008,9 +1014,21 @@ def page_benchmark(root: Path) -> None:
             st.markdown(f"**{md_text(r.run.run_id)}**")
             st.code("\n".join(r.run.solution_summary) or "(none)", language=None)
 
-    st.subheader("Not recorded and not observable")
-    _bullets(d.not_recorded)
-    _bullets(d.not_observable)
+    st.subheader("Recording coverage and limitations")
+    coverage = RecordingCoverage.from_runs([r.run for r in ev.runs])
+    st.caption(
+        f"Full response texts kept for {coverage.full_responses} of {n} selected runs, "
+        f"response times measured for {coverage.latencies} of {n}. "
+        f"Send times recorded for {coverage.timestamps} of {n}, "
+        f"run order recorded for {coverage.run_orders} of {n}."
+    )
+    if d.not_recorded and (not d.notes_batches or set(d.notes_batches).intersection(chosen)):
+        scope = f" for {', '.join(d.notes_batches)}" if d.notes_batches else " (batch unspecified)"
+        st.caption(md_text(f"Recording omissions listed in the benchmark definition{scope}"))
+        _bullets(d.not_recorded)
+    if d.not_observable:
+        st.caption("Not observable in this experiment")
+        _bullets(d.not_observable)
     if not d.documented_facts:
         st.caption(
             "No documented facts are recorded: nothing on this page is a statement from "

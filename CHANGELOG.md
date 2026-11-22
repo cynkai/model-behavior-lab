@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+### Reporting repeat benchmark runs
+
+- `mblab benchmark report DIR --report ID` writes one declared report.
+  Add `--check` to compare it with the saved report. Omitting the ID processes every report.
+- Existing reports keep their modification times on identical reruns. Before writing, the
+  command checks all selected reports for conflicts. Use `--report ID --force` to replace
+  a differing archive. Verification flags a file with invalid UTF-8 as a mismatch.
+- Report paths are checked together so an alias in the benchmark definition cannot
+  redirect a selected report over another archive. Output paths must stay inside the benchmark.
+- Benchmark count scoring compares the recorded decimal value exactly, including multiple
+  candidate numbers in one answer. Tables and chart tooltips preserve that value even when
+  the plotted coordinate has to be rounded.
+- Comparisons use the fraction of fully correct runs for each condition, including when
+  the number of repetitions differs. Error descriptions distinguish wrong counts, missing
+  or unreadable answers, and order errors. The valid-order total checks each permutation
+  independently of its rank and the requirement to supply two different orders.
+- The report and dashboard count the selected runs that retain full responses, send
+  times, run order, and response times. The optional `notes_batches` field identifies
+  the batches described by the collection notes and follow-up plans.
+
 ### Benchmark 01: the first observed results
 
 - `benchmarks/benchmark-001-constraint-reasoning/`: one constraint-reasoning task, six

@@ -195,6 +195,12 @@ def _cli(*args: object) -> object:
     return CliRunner().invoke(app, [str(a) for a in args], env={"COLUMNS": "200", "NO_COLOR": "1"})
 
 
+def test_benchmark_check_compares_literal_report_content():
+    before = "| Generated | recorded wording |\n--first"
+    after = "| Generated | different wording |\n++second"
+    assert compare_reports(before, after, ignore_volatile=False).changed_lines == 4
+
+
 def test_report_never_replaces_a_different_report_without_force(study_dir, definition, plan):
     target = study_dir / "reports" / "report.md"
     assert _cli("report", "-s", study_dir).exit_code == 0

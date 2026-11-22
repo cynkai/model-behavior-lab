@@ -10,6 +10,7 @@ from datetime import date
 from pathlib import Path
 
 import pytest
+import yaml
 from pydantic import ValidationError
 from typer.testing import CliRunner
 
@@ -24,6 +25,7 @@ from mblab.benchmark import (
     dump_run,
     evaluate,
     make_reports,
+    render_report,
     runs_frame,
     selection_grid,
 )
@@ -251,6 +253,16 @@ def test_an_order_the_rules_forbid_says_which_rule(bench):
     assert "breaks rule 6" in other.detail
 
 
+def test_count_is_displayed_with_the_precision_used_for_its_score(bench):
+    answers = _given("22.99999", "ACBDEFGH", "ACBDEGFH")
+    run = _repeat(bench, "A", 2, answers=answers)
+    ev = evaluate(Benchmark(bench.root, bench.definition, [run]))
+    result = ev.runs[0]
+    assert result.error_type(ev.truth) == "count too low"
+    assert "count 22.99999 instead of 23" in result.error_detail(ev.truth)
+    assert "A: 22.99999" in render_report(ev, bench.report_spec("preliminary"))
+
+
 def test_a_kept_response_is_read_by_its_answer_lines(bench):
     raw = (
         "풀이 …\n\n**총 경우의 수:** 23\n사전순 첫 번째 순서: ACBDEFGH\n"
@@ -270,6 +282,45 @@ def test_a_kept_response_is_read_by_its_answer_lines(bench):
 def test_the_committed_report_is_what_the_data_makes(bench):
     for spec, text in make_reports(bench):
         assert (BENCH / spec.path).read_text(encoding="utf-8") == text, spec.path
+
+
+@pytest.mark.parametrize(
+    ("answers", "detail"),
+    [
+        ({"count": "25", "lexicographic_first": "ABCDEFGH"}, "lexicographic_first:"),
+        ({"count": "unclear"}, "no number"),
+        ({"other_valid_order": "ACBDEGFH"}, "count: no answer available"),
+    ],
+)
+def test_report_does_not_attribute_every_failure_to_a_miscount(bench, answers, detail):
+    base = bench.runs[0]
+    run = _repeat(bench, "A", 2, answers=answers, reported_breakdown={})
+    ev = evaluate(Benchmark(bench.root, bench.definition, [base, run]), ["next"])
+    text = render_report(ev, bench.report_spec("preliminary"))
+    assert "gave a correct first order and a valid second order" not in text
+    assert "traced by comparing the intermediate counts" not in text
+    assert detail in ev.runs[0].error_detail(ev.truth)
+    assert ev.runs[0].error_detail(ev.truth) in text
+
+
+def test_unreadable_count_with_two_correct_orders_is_not_a_measured_miscount(bench):
+    answers = {**bench.runs[0].answers, "count": "unknown"}
+    run = _repeat(bench, "A", 2, answers=answers, reported_breakdown={})
+    ev = evaluate(Benchmark(bench.root, bench.definition, [run]))
+    text = render_report(ev, bench.report_spec("preliminary"))
+    assert "miscounted the valid orders" not in text
+    assert "count: no number" in text
+
+
+def test_valid_order_metric_is_independent_of_rank_and_distinctness(bench):
+    answers = _given("23", "ACBDEGFH", "ACBDEGFH")
+    run = _repeat(bench, "A", 2, answers=answers)
+    ev = evaluate(Benchmark(bench.root, bench.definition, [run]))
+    assert ev.correct("lexicographic_first") == ev.correct("other_valid_order") == (0, 1)
+    assert ev.valid_order_answers == 2
+    assert "| Valid orders given (both order answers) | 2 of 2 (100%) |" in render_report(
+        ev, bench.report_spec("preliminary")
+    )
 
 
 def test_report_sections_and_wording(bench):
@@ -372,6 +423,41 @@ def test_a_report_needs_runs_in_its_batches(tmp_path):
         Benchmark.load(root)
 
 
+def test_optional_benchmark_note_scope(tmp_path):
+    root = _copy(tmp_path)
+    path = root / BENCHMARK_FILE
+    original = path.read_text(encoding="utf-8")
+    scope = f"notes_batches: [{PRELIMINARY}]\n"
+    path.write_text(original.replace(scope, ""), encoding="utf-8")
+    assert "notes_batches" not in Benchmark.load(root).definition.model_dump()
+    path.write_text(original.replace(scope, "notes_batches: [typo]\n"), encoding="utf-8")
+    with pytest.raises(StudyError, match="notes_batches lists batch 'typo'"):
+        Benchmark.load(root)
+
+
+def test_reproduction_commands_also_select_a_batch_of_first_repetitions(bench):
+    report = bench.report_spec("preliminary").model_copy(
+        update={
+            "id": "b-only",
+            "batches": ["first-b"],
+            "path": "reports/b-only.md",
+            "reproduction_scope": None,
+        }
+    )
+    runs = [
+        r.model_copy(update={"batch": "first-b"}) if r.condition_id == "B" else r
+        for r in bench.runs
+    ]
+    definition = bench.definition.model_copy(
+        update={"reports": [*bench.definition.reports, report]}
+    )
+    b = Benchmark(bench.root, definition, runs)
+    [(spec, text)] = make_reports(b, "b-only")
+    assert "reproduction_scope" not in spec.model_dump()
+    assert f"mblab benchmark show benchmarks/{b.root.name} --batch first-b" in text
+    assert f"mblab benchmark report benchmarks/{b.root.name} --check --report b-only" in text
+
+
 def test_a_run_needs_an_answer_or_the_response(bench):
     data = bench.runs[0].model_dump(mode="json") | {"answers": {}, "raw_response": None}
     with pytest.raises(ValidationError, match="raw_response or answers"):
@@ -418,6 +504,72 @@ def test_report_writes_the_listed_reports(tmp_path):
     assert result.exit_code == 0, result.output
     expected = (BENCH / "reports" / "preliminary.md").read_text(encoding="utf-8")
     assert (root / "reports" / "preliminary.md").read_text(encoding="utf-8") == expected
+
+
+def test_regenerating_reports_preserves_edits_until_forced(tmp_path):
+    root = _copy(tmp_path)
+    archive = root / "reports" / "preliminary.md"
+    expected = archive.read_bytes()
+    original_time = archive.stat().st_mtime_ns
+    args = ["benchmark", "report", str(root)]
+    cli = CliRunner()
+    assert cli.invoke(app, args).exit_code == 0
+    assert archive.stat().st_mtime_ns == original_time
+    archive.write_bytes(b"edited archive\n")
+    # Put the fresh report before the conflicting one to exercise the preflight.
+    manifest = root / BENCHMARK_FILE
+    data = yaml.safe_load(manifest.read_text(encoding="utf-8"))
+    data["reports"].insert(
+        0,
+        {"id": "second", "title": "Second", "batches": [PRELIMINARY], "path": "reports/second.md"},
+    )
+    manifest.write_text(yaml.safe_dump(data, allow_unicode=True), encoding="utf-8")
+    result = cli.invoke(app, args)
+    assert result.exit_code == 2 and "--force" in result.output
+    assert archive.read_bytes() == b"edited archive\n"
+    assert not (root / "reports" / "second.md").exists()
+    assert cli.invoke(app, [*args, "--check", "--force"]).exit_code == 2
+    assert archive.read_bytes() == b"edited archive\n"
+    assert cli.invoke(app, [*args, "--report", "preliminary", "--force"]).exit_code == 0
+    assert archive.read_bytes() == expected
+    assert not (root / "reports" / "second.md").exists()
+
+
+def test_check_reports_invalid_utf8_as_a_difference(tmp_path):
+    root = _copy(tmp_path)
+    archive = root / "reports" / "preliminary.md"
+    archive.write_bytes(b"\xff")
+    result = CliRunner().invoke(app, ["benchmark", "report", str(root), "--check"])
+    assert result.exit_code == 1 and "UTF-8" in result.output
+    assert archive.read_bytes() == b"\xff"
+
+
+def test_report_selection_isolates_the_followup_on_write_and_check(tmp_path, bench):
+    root = _copy(tmp_path)
+    _append(root, _repeat(bench, "B", 2))
+    with (root / BENCHMARK_FILE).open("a", encoding="utf-8") as f:
+        f.write(
+            "\n  - id: followup\n    title: Follow-up\n    batches: [next]\n"
+            "    path: reports/followup.md\n"
+        )
+    archive = root / "reports" / "preliminary.md"
+    archive.write_text("local edits\n", encoding="utf-8")
+    cli = CliRunner()
+    command = ["benchmark", "report", str(root)]
+    selected = [*command, "--report", "followup"]
+    followup = root / "reports" / "followup.md"
+    assert cli.invoke(app, [*selected, "--check"]).exit_code == 1
+    assert not followup.exists()
+    assert cli.invoke(app, selected).exit_code == 0
+    text = followup.read_text(encoding="utf-8")
+    assert "1 (batches: next)" in text
+    assert f"mblab benchmark show benchmarks/{root.name} --batch next" in text
+    assert f"mblab benchmark report benchmarks/{root.name} --check --report followup" in text
+    assert archive.read_text(encoding="utf-8") == "local edits\n"
+    assert cli.invoke(app, [*selected, "--check"]).exit_code == 0
+    assert cli.invoke(app, [*command, "--check"]).exit_code == 1
+    unknown = cli.invoke(app, [*command, "--report", "typo"])
+    assert unknown.exit_code == 2 and "no report 'typo'" in unknown.output
 
 
 def test_show_refuses_a_directory_that_is_not_a_benchmark(tmp_path):

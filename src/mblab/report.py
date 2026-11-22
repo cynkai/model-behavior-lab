@@ -979,14 +979,17 @@ class ReportComparison:
         return self.changed_lines == 0
 
 
-def compare_reports(existing: str, new: str) -> ReportComparison:
-    old_lines, new_lines = _normalized(existing), _normalized(new)
+def compare_reports(existing: str, new: str, *, ignore_volatile: bool = True) -> ReportComparison:
+    """Study reports have volatile provenance lines. Benchmark reports are deterministic."""
+    old_lines, new_lines = (
+        (_normalized(existing), _normalized(new))
+        if ignore_volatile
+        else (existing.split("\n"), new.split("\n"))
+    )
     diff = list(
         difflib.unified_diff(old_lines, new_lines, "existing report", "made now", lineterm="")
     )
-    changed = sum(
-        1 for line in diff[2:] if line[:1] in {"+", "-"} and not line.startswith(("+++", "---"))
-    )
+    changed = sum(line.startswith(("+", "-")) for line in diff[2:])
     match = _MADE_WITH.search(existing)
     return ReportComparison(
         diff=diff,

@@ -323,3 +323,58 @@ def test_a_benchmark_directory_gets_the_benchmark_page(monkeypatch):
         assert md_text(title) in markdown
     assert not at.sidebar.radio  # one page: the study pages do not apply
     assert any("Exploratory" in i.value for i in at.info)
+
+
+def test_benchmark_coverage_follows_batch_selection(monkeypatch, tmp_path):
+    from mblab.benchmark import Benchmark
+
+    from .test_benchmark import PRELIMINARY, _append, _copy, _repeat
+
+    root = _copy(tmp_path)
+    bench = Benchmark.load(root)
+    repeat = _repeat(
+        bench,
+        "A",
+        2,
+        latency_seconds=0.0,
+        latency_method="manual_stopwatch",
+        run_order=1,
+        raw_response="총 경우의 수: 23\n사전순 첫 번째 순서: ACBDEGFH\n다른 유효한 순서: ACFBDEGH",
+    )
+    timed_summary = _repeat(bench, "B", 2, latency_seconds=12, latency_method="manual_stopwatch")
+    _append(root, repeat, timed_summary)
+    at = _app(monkeypatch, root)
+    for batches, retained, timed, total in [
+        ([PRELIMINARY, "next"], 1, 2, 8),
+        (["next"], 1, 2, 2),
+        ([PRELIMINARY], 0, 0, 6),
+    ]:
+        at.multiselect(key="batches").set_value(batches).run()
+        assert not at.exception, at.exception
+        captions = [c.value for c in at.caption]
+        assert any(f"Full response texts kept for {retained} of {total}" in c for c in captions)
+        assert any(f"response times measured for {timed} of {total}" in c for c in captions)
+        assert any(f"Send times recorded for 0 of {total}" in c for c in captions)
+        orders = int("next" in batches)
+        assert any(f"run order recorded for {orders} of {total}" in c for c in captions)
+        assert any("Recording omissions listed" in c for c in captions) == (PRELIMINARY in batches)
+        if batches == ["next"]:
+            assert {m.label: m.value for m in at.metric}["Valid orders given"] == "4 of 4"
+            assert at.dataframe[0].value["Lexicographic first"].tolist() == ["Fail", "Pass"]
+
+    at.multiselect(key="batches").set_value([]).run()
+    assert not at.exception, at.exception
+    assert not at.metric and not at.dataframe
+    assert any("Select a batch" in i.value for i in at.info)
+
+
+def test_benchmark_without_runs_shows_an_empty_state(monkeypatch, tmp_path):
+    from .test_benchmark import BENCH
+
+    definition = yaml.safe_load((BENCH / "benchmark.yaml").read_text(encoding="utf-8"))
+    definition["reports"] = []
+    definition.pop("notes_batches", None)
+    (tmp_path / "benchmark.yaml").write_text(yaml.safe_dump(definition), encoding="utf-8")
+    at = _app(monkeypatch, tmp_path)
+    assert not at.metric and not at.dataframe
+    assert any("No runs recorded yet" in i.value for i in at.info)

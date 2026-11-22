@@ -12,6 +12,7 @@ of an empty or placeholder chart when there is nothing to plot.
 from __future__ import annotations
 
 import zlib
+from math import isfinite
 
 import altair as alt
 import pandas as pd
@@ -377,15 +378,18 @@ def benchmark_count_chart(runs: pd.DataFrame, verified: int, mode: str | None) -
     )
     data["result"] = data["exact_count"].map({"Pass": "correct", "Fail": "incorrect"})
     data = data[data["result"].notna()]
+    data["count_given"] = data["count_given"].map(str)
+    data["count_position"] = data["count_given"].map(float)
+    data = data[data["count_position"].map(isfinite)]
     if data.empty:
         return None
     order = list(dict.fromkeys(data["condition"]))
-    values = [*data["count_given"].astype(float).tolist(), float(verified)]
+    values = [*data["count_position"].tolist(), float(verified)]
     domain = [min(values) - 2, max(values) + 2]
     results = ["correct", "incorrect"]
     y = alt.Y("condition:N", sort=order, title=None, axis=alt.Axis(grid=False, labelLimit=260))
     x = alt.X(
-        "count_given:Q",
+        "count_position:Q",
         scale=alt.Scale(domain=domain, nice=False, zero=False),
         axis=alt.Axis(tickMinStep=1, format="d"),
         title="Number of valid orders the response gave",
@@ -409,7 +413,7 @@ def benchmark_count_chart(runs: pd.DataFrame, verified: int, mode: str | None) -
             tooltip=[
                 alt.Tooltip("run_id:N", title="Run"),
                 alt.Tooltip("condition:N", title="Condition"),
-                alt.Tooltip("count_given:Q", title="Count given"),
+                alt.Tooltip("count_given:N", title="Count given"),
                 alt.Tooltip("result:N", title="Result"),
             ],
         )

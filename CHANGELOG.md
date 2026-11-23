@@ -18,6 +18,11 @@
 - Grading sheets preserve fractional rubric thresholds. Manual scoring accepts finite scales
   and can average grades near the largest supported score without overflowing.
 
+### Dashboard charts
+
+- Chart labels keep their matching background when the browser changes between light
+  and dark mode before Streamlit redraws the chart.
+
 ### CSV timestamps
 
 - `mblab import --default-tz` rejects malformed UTC offsets. For named time zones, CSV

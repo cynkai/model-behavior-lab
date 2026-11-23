@@ -76,7 +76,9 @@ def _style(chart: alt.TopLevelMixin, t: dict) -> alt.TopLevelMixin:
     # titles, legends and axes are added around the plot instead of squeezing it.
     return (
         chart.properties(autosize=alt.AutoSizeParams(type="fit-x", contains="padding"))
-        .configure(background="transparent", font=FONT)
+        # A browser theme switch can precede the next Streamlit rerun. Keep the
+        # rendered labels on the surface selected for the same chart specification.
+        .configure(background=t["surface"], font=FONT)
         .configure_view(strokeWidth=0)
         .configure_axis(
             gridColor=t["grid"],

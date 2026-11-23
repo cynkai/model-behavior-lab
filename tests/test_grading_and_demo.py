@@ -5,8 +5,10 @@ import json
 
 import pytest
 import yaml
+from typer.testing import CliRunner
 
 from mblab.analysis import analyze
+from mblab.cli import app
 from mblab.csvcells import FORMULA_STARTS
 from mblab.demo import create_demo_study
 from mblab.grading import SHEET_COLUMNS, export_blind_sheet, import_blind_sheet
@@ -117,6 +119,96 @@ def test_grade_import_rejects_bad_rows(manual_study):
     assert "not a number" in messages
     assert "grader_id missing" in messages
     assert "unknown grading_id" in messages
+
+
+def test_grade_import_rejects_key_from_another_export(manual_study, tmp_path):
+    study = Study.load(manual_study)
+    sheet, key, _ = export_blind_sheet(study, seed=1)
+    _, other_key, _ = export_blind_sheet(study, tmp_path / "second-export", seed=2)
+    _fill(sheet, ["2"])
+    original = json.loads(key.read_text())
+    other = json.loads(other_key.read_text())
+    assert original["entries"]["G001"] != other["entries"]["G001"]
+    with pytest.raises(StudyError, match="grading sheet and key are from different exports"):
+        import_blind_sheet(study, sheet, other_key)
+    assert len(import_blind_sheet(study, sheet, key).grades) == 1
+
+
+def test_grade_import_accepts_legacy_pairs_and_rejects_mixing_formats(manual_study, tmp_path):
+    study = Study.load(manual_study)
+    sheet, key, _ = export_blind_sheet(study)
+    rows = _fill(sheet, ["2"])
+    legacy_sheet = tmp_path / "legacy.csv"
+    with legacy_sheet.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(
+            handle, fieldnames=[name for name in SHEET_COLUMNS if name != "sheet_id"]
+        )
+        writer.writeheader()
+        writer.writerows(
+            {name: value for name, value in row.items() if name != "sheet_id"} for row in rows
+        )
+    legacy_key = tmp_path / "legacy-key.json"
+    data = json.loads(key.read_text())
+    del data["sheet_id"]
+    legacy_key.write_text(json.dumps(data), encoding="utf-8")
+
+    imported = import_blind_sheet(study, legacy_sheet, legacy_key)
+    assert imported.errors == [] and len(imported.grades) == 1
+    for csv_path, key_path in [(sheet, legacy_key), (legacy_sheet, key)]:
+        with pytest.raises(StudyError, match="grading sheet and key are from different exports"):
+            import_blind_sheet(study, csv_path, key_path)
+
+
+@pytest.mark.parametrize("changed", ["response_text", "rubric"])
+def test_grade_import_rejects_stale_material_without_writing(manual_study, changed):
+    study = Study.load(manual_study)
+    runner = CliRunner()
+    exported = runner.invoke(app, ["grade", "export", "-s", str(manual_study)])
+    assert exported.exit_code == 0, exported.output
+    sheet = manual_study / "grading" / "blind-sheet.csv"
+    key = sheet.with_name("blind-key.json")
+    _fill(sheet, ["2", "1"])
+    if changed == "response_text":
+        stale_run = json.loads(key.read_text())["entries"]["G001"]
+        write_records(
+            manual_study,
+            [
+                record.model_copy(update={"response_text": "Corrected observation"})
+                if record.run_id == stale_run
+                else record
+                for record in study.records
+            ],
+        )
+    else:
+        path = manual_study / "experiment.yaml"
+        data = yaml.safe_load(path.read_text())
+        task = next(task for task in data["tasks"] if task["id"] == "T7")
+        task["scoring"]["rubric"] = "2 = correct explanation with units"
+        path.write_text(yaml.safe_dump(data), encoding="utf-8")
+
+    result = runner.invoke(app, ["grade", "import", str(sheet), "-s", str(manual_study)])
+    assert result.exit_code == 2, result.output
+    assert f"{changed} does not match the current study" in result.output
+    assert "no grades were imported" in result.output
+    assert not study.grades_path.exists()
+
+
+def test_grade_import_accepts_spreadsheet_newlines_and_number_formats(manual_study):
+    study = Study.load(manual_study)
+    write_records(
+        manual_study,
+        [
+            record.model_copy(update={"response_text": "Step 1\r\nStep 2\rStep 3"})
+            for record in study.records
+        ],
+    )
+    study = Study.load(manual_study)
+    sheet, key, _ = export_blind_sheet(study)
+    _fill(sheet, ["2"])
+    text = sheet.read_text()
+    sheet.write_text(text.replace(",2,2,", ",2.0,2.00,"), encoding="utf-8")
+    imported = import_blind_sheet(study, sheet, key)
+    assert imported.errors == [] and len(imported.grades) == 1
 
 
 def test_blind_sheet_shows_formula_responses_as_text(manual_study):

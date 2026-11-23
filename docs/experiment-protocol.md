@@ -135,6 +135,14 @@ mblab report -s my-study          # my-study/reports/report.md
 mblab dashboard -s my-study
 ```
 
+For manual grading, give the grader only `blind-sheet.csv`. Keep the corresponding
+`blind-key.json` and use it with `mblab grade import`. If you export a second sheet
+while a previous one is being graded, use `mblab grade export --out-dir DIR` to keep
+the pairs in separate directories. On the sheet, fill in only the points, grader ID
+and optional notes. Export again if a response or its rubric changes. Older sheets
+and keys can still be imported together. Keep track of which exports they came from,
+since older pairs have no shared export ID.
+
 Read the *Limitations* and *Claims ledger* sections before writing anything about the
 results. A pattern described as *consistent with the per-message selection* is not a
 statement about which model ran on the server.

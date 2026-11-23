@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### CSV timestamps
+
+- `mblab import --default-tz` rejects malformed UTC offsets. For named time zones, CSV
+  rows at repeated or skipped local times ask for a checked timestamp with an explicit offset.
+
 ### Blind grading
 
 - Each new grading sheet identifies its matching key. Imports reject mismatched exports

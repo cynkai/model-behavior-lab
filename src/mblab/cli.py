@@ -813,7 +813,10 @@ def import_(
     dry_run: Annotated[bool, typer.Option(help="Check the file without saving anything.")] = False,
     default_tz: Annotated[
         str | None,
-        typer.Option(help="Time zone for timestamps without an offset, e.g. +09:00 or Asia/Seoul."),
+        typer.Option(
+            help="Time zone for CSV timestamps without an offset, e.g. +09:00 or Asia/Seoul. "
+            "Repeated or skipped local times need to be checked and given an explicit offset."
+        ),
     ] = None,
 ) -> None:
     """Import observations. All rows must be valid, or nothing is imported."""

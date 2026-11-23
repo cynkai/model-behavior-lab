@@ -171,6 +171,10 @@ argument. `mblab <command> --help` lists all options.
 | `mblab demo DIR` | Create a synthetic demo study |
 | `mblab benchmark show DIR [--batch NAME]` / `mblab benchmark report DIR [--report ID] [--check or --force]` | Score runs in the selected batches. Write or check one named report, or all reports if the ID is omitted. Replacing a differing report requires `--force`. |
 
+For CSV timestamps without a UTC offset, pass `--default-tz +09:00` or use a named zone
+such as `--default-tz Asia/Seoul`. If a clock change repeats or skips a local time in a
+named zone, check the recorded time and put the explicit UTC offset in that row.
+
 ## Study directory
 
 ```text

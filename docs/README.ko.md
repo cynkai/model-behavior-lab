@@ -153,6 +153,10 @@ mblab report -s my-study
 | `mblab demo DIR` | 합성 데모 실험 생성 |
 | `mblab benchmark show DIR [--batch NAME]` / `mblab benchmark report DIR [--report ID] [--check 또는 --force]` | 선택한 회차의 실행을 채점합니다. 보고서 ID를 지정하면 해당 보고서만 처리하고, 생략하면 전체를 처리합니다. `--check`로 차이를 검토하고 `--force`로 기존 내용을 교체할 수 있습니다. |
 
+CSV의 시각에 UTC 오프셋이 없으면 `--default-tz +09:00` 또는 `--default-tz Asia/Seoul`처럼
+시간대를 지정하세요. 시계 조정으로 같은 시각이 두 번 나타나거나 특정 시각이 생략되는 경우에는
+기록된 시각을 확인하고 해당 행에 UTC 오프셋을 직접 입력하세요.
+
 ## 실험 디렉터리
 
 ```text

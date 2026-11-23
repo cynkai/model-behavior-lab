@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
-from datetime import timedelta, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 import yaml
@@ -140,18 +140,60 @@ def test_merge_refuses_duplicates_unless_replace(study_dir, definition, plan):
     [("+09:00", 9), ("-0500", -5), ("UTC", 0), ("Asia/Seoul", 9)],
 )
 def test_parse_timezone(value, offset):
-    from datetime import datetime
-
     tz = parse_timezone(value)
     assert datetime(2026, 11, 20, tzinfo=tz).utcoffset() == timedelta(hours=offset)
 
 
-def test_parse_timezone_rejects_garbage():
-    with pytest.raises(StudyError):
-        parse_timezone("+9")
-    with pytest.raises(StudyError):
-        parse_timezone("Mars/Olympus")
+@pytest.mark.parametrize("value", ["+9", "+0:900", "+09:60", "-2460"])
+def test_parse_timezone_rejects_invalid_offsets(value):
+    with pytest.raises(StudyError, match="invalid UTC offset"):
+        parse_timezone(value)
+
+
+@pytest.mark.parametrize("value", ["Mars/Olympus", "   "])
+def test_parse_timezone_rejects_unknown_zones(value):
+    with pytest.raises(StudyError, match="unknown time zone"):
+        parse_timezone(value)
+
+
+def test_parse_timezone_is_optional():
     assert parse_timezone(None) is None
+
+
+@pytest.mark.parametrize(
+    ("timestamp", "message"),
+    [
+        ("2026-03-08T02:30:00", "does not exist"),
+        ("2026-11-01T01:30:00", "is ambiguous"),
+    ],
+)
+def test_csv_import_rejects_local_times_during_clock_changes(study_dir, timestamp, message):
+    study, path, rows = _template_rows(study_dir)
+    rows[0].update(timestamp=timestamp, client_version="1.0", response_text="ANSWER: 265")
+    _write_rows(path, rows)
+    result = import_file(study, path, default_tz=parse_timezone("America/New_York"))
+    assert result.records == []
+    (error,) = result.errors
+    assert error.startswith("row 2:")
+    assert message in error and "America/New_York" in error and "explicit UTC offset" in error
+
+
+def test_csv_import_preserves_explicit_offsets_and_accepts_unique_local_times(study_dir):
+    study, path, rows = _template_rows(study_dir)
+    for row, stamp in zip(
+        rows[:3],
+        ["2026-11-01T01:30:00-04:00", "2026-11-01T01:30:00-05:00", "2026-07-01T12:00:00"],
+        strict=True,
+    ):
+        row.update(timestamp=stamp, client_version="1.0", response_text="ANSWER: 265")
+    _write_rows(path, rows)
+    result = import_file(study, path, default_tz=parse_timezone("America/New_York"))
+    assert result.errors == []
+    assert [record.timestamp.utcoffset() for record in result.records] == [
+        timedelta(hours=-4),
+        timedelta(hours=-5),
+        timedelta(hours=-4),
+    ]
 
 
 def _one_filled_row(study_dir, **values):

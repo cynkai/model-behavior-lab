@@ -15,6 +15,7 @@ import contextlib
 import csv
 import io
 import json
+import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta, timezone, tzinfo
 from pathlib import Path
@@ -119,12 +120,14 @@ def parse_timezone(value: str | None) -> tzinfo | None:
     text = value.strip()
     if text.upper() in {"UTC", "Z"}:
         return UTC
-    if text[0] in "+-":
-        digits = text[1:].replace(":", "")
-        if len(digits) == 4 and digits.isdigit():
-            delta = timedelta(hours=int(digits[:2]), minutes=int(digits[2:]))
-            return timezone(delta if text[0] == "+" else -delta)
-        raise StudyError(f"invalid UTC offset {value!r} (use e.g. +09:00)")
+    if text.startswith(("+", "-")):
+        offset = re.fullmatch(r"([+-])([0-9]{2}):?([0-9]{2})", text)
+        if offset:
+            hours, minutes = int(offset[2]), int(offset[3])
+            if hours < 24 and minutes < 60:
+                delta = timedelta(hours=hours, minutes=minutes)
+                return timezone(delta if offset[1] == "+" else -delta)
+        raise StudyError(f"invalid UTC offset {value!r} (use e.g. +09:00 or -0500)")
     try:
         return ZoneInfo(text)
     except (ZoneInfoNotFoundError, ValueError) as exc:
@@ -138,13 +141,23 @@ def parse_timestamp(value: str, default_tz: tzinfo | None) -> datetime:
         raise ValueError(
             f"timestamp {value!r} is not ISO 8601 (e.g. 2026-11-20T14:03:00+09:00)"
         ) from exc
-    if stamp.tzinfo is None:
-        if default_tz is None:
-            raise ValueError(
-                f"timestamp {value!r} has no UTC offset; add one (e.g. +09:00) or pass --default-tz"
-            )
-        stamp = stamp.replace(tzinfo=default_tz)
-    return stamp
+    if stamp.tzinfo is not None:
+        return stamp
+    if default_tz is None:
+        raise ValueError(
+            f"timestamp {value!r} has no UTC offset; add one (e.g. +09:00) or pass --default-tz"
+        )
+
+    local = stamp.replace(tzinfo=default_tz)
+    if isinstance(default_tz, ZoneInfo) and local.utcoffset() != local.replace(fold=1).utcoffset():
+        # A repeated time survives a round trip via UTC. A skipped time moves to a valid time.
+        round_trip = local.astimezone(UTC).astimezone(default_tz).replace(tzinfo=None)
+        problem = "is ambiguous" if round_trip == stamp else "does not exist"
+        raise ValueError(
+            f"timestamp {value!r} {problem} in {default_tz.key}; "
+            "check the recorded time and include an explicit UTC offset"
+        )
+    return local
 
 
 def _parse_bool(value: str) -> bool:

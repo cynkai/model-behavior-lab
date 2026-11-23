@@ -12,43 +12,10 @@ from mblab.cli import app
 from mblab.csvcells import FORMULA_STARTS
 from mblab.demo import create_demo_study
 from mblab.grading import SHEET_COLUMNS, export_blind_sheet, import_blind_sheet
-from mblab.plan import generate_plan
-from mblab.schema import ExperimentDefinition
-from mblab.study import Study, StudyError, append_jsonl, save_plan, template_text
+from mblab.study import Study, StudyError, append_jsonl
 from mblab.validate import validate_study
 
-from .conftest import FIXED_NOW, make_record, write_records
-
-
-@pytest.fixture
-def manual_study(tmp_path):
-    data = yaml.safe_load(template_text())
-    data["tasks"].append(
-        {
-            "id": "T7",
-            "title": "Explain the trip calculation",
-            "prompt": "Explain how to compute the minutes between 09:47 and 14:12.",
-            "scoring": {
-                "method": "manual",
-                "rubric": "2 = correct method and result; 1 = minor slip; 0 = wrong",
-                "max_points": 2,
-                "pass_threshold": 2,
-            },
-        }
-    )
-    definition = ExperimentDefinition.model_validate(data)
-    plan = generate_plan(definition, now=FIXED_NOW)
-    root = tmp_path / "manual"
-    root.mkdir()
-    (root / "experiment.yaml").write_text(yaml.safe_dump(data), encoding="utf-8")
-    save_plan(plan, root / "plan.json")
-    runs = [r for r in plan.runs if r.task_id == "T7" and r.condition_id in {"A", "C"}]
-    records = [
-        make_record(definition, plan, r.run_id, response_text=f"Explanation {r.run_id}")
-        for r in runs
-    ]
-    write_records(root, records)
-    return root
+from .conftest import make_record, write_records
 
 
 def _fill(sheet, points_by_row, grader="g1"):
@@ -100,6 +67,44 @@ def test_grade_roundtrip_feeds_the_analysis(manual_study):
 
     again = import_blind_sheet(study, sheet, key)
     assert len(again.errors) == 5 and "already graded" in again.errors[0]
+
+
+def test_agreement_command_after_two_blind_imports(manual_study, tmp_path):
+    runner = CliRunner()
+    study_args = ["-s", str(manual_study)]
+    exported = runner.invoke(app, ["grade", "export", *study_args])
+    assert exported.exit_code == 0, exported.output
+    sheet = manual_study / "grading" / "blind-sheet.csv"
+    for grader, scores in (("first", ["0", "2"]), ("second", ["1", "2"])):
+        _fill(sheet, scores, grader=grader)
+        imported = runner.invoke(app, ["grade", "import", str(sheet), *study_args])
+        assert imported.exit_code == 0, imported.output
+
+    result = runner.invoke(app, ["grade", "agreement", *study_args])
+    assert result.exit_code == 0, result.output
+    assert "1/2 (50%)" in result.output and "2/2 (100%)" in result.output
+
+    path = tmp_path / "analysis.json"
+    result = runner.invoke(app, ["analyze", *study_args, "--json", str(path)])
+    assert result.exit_code == 0, result.output
+    assert json.loads(path.read_text())["grading_agreement"] == [
+        {
+            "task_id": "T7",
+            "eligible_runs": 6,
+            "graded_runs": 2,
+            "multi_rated_runs": 2,
+            "pairs": 2,
+            "exact_matches": 1,
+            "decision_matches": 2,
+        }
+    ]
+
+
+def test_agreement_command_for_automatic_study(study_dir):
+    result = CliRunner().invoke(app, ["grade", "agreement", "-s", str(study_dir)])
+    assert result.exit_code == 0, result.output
+    assert "no manually scored tasks" in result.output
+    assert "grading_agreement" not in analyze(Study.load(study_dir)).to_dict()
 
 
 def test_grade_import_rejects_bad_rows(manual_study):

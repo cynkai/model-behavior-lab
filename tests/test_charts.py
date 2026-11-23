@@ -40,6 +40,7 @@ def test_chart_compiles(demo_analysis, name, mode):
     spec = _builders(demo_analysis)[name](mode).to_dict()
     svg = vlc.vegalite_to_svg(spec, vl_version=vlc.get_vegalite_versions()[-1])
     assert svg.startswith("<svg")
+    assert f'fill="{charts.theme(mode)["surface"]}"' in svg.split("<g ", 1)[0]
 
 
 def test_charts_are_not_built_without_data(study_dir):

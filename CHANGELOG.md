@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+### Manual grading agreement
+
+- `mblab grade agreement -s STUDY`, Markdown reports, and the dashboard's task page show
+  per-task grading coverage, exact point agreement, and pass/fail agreement.
+  `mblab analyze --json FILE` includes the underlying `grading_agreement` counts.
+- Each unordered grader pair on an included, completed response contributes once.
+  Grades with a mismatched rubric scale and all duplicate run/grader entries are excluded
+  from both agreement and manual scoring. Unblinded grades are included. Tasks with no
+  usable pairs show an em dash for agreement. These descriptive metrics cannot establish
+  grading correctness or reliability.
+- Blind sheet exports include only completed, protocol-adherent responses that match the
+  plan. Import checks eligibility again, including for older sheets. Surrounding whitespace
+  in a grader ID is trimmed in both imported sheets and existing grade records.
+- Grading sheets preserve fractional rubric thresholds. Manual scoring accepts finite scales
+  and can average grades near the largest supported score without overflowing.
+
+### Dashboard charts
+
+- Chart labels keep their matching background when the browser changes between light
+  and dark mode before Streamlit redraws the chart.
+
 ### CSV timestamps
 
 - `mblab import --default-tz` rejects malformed UTC offsets. For named time zones, CSV

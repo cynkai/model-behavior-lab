@@ -51,6 +51,7 @@ from mblab.formatting import (
     METRIC_NAMES,
     METRIC_UNITS,
     VERDICT_SHORT,
+    agreement_cells,
     interval_text,
     md_text,
     method_text,
@@ -625,6 +626,26 @@ def _comparison_sections(a: Analysis, conf: int) -> None:
 def page_tasks(study: Study, a: Analysis) -> None:
     st.title("Task-level results")
     _banner(a)
+    if a.grading_agreement:
+        st.subheader("Manual inter-rater agreement")
+        _table(
+            pd.DataFrame(
+                [agreement_cells(task) for task in a.grading_agreement],
+                columns=[
+                    "task",
+                    "eligible runs",
+                    "graded runs",
+                    "runs with 2+ graders",
+                    "grader pairs",
+                    "exact point agreement",
+                    "pass/fail agreement",
+                ],
+            )
+        )
+        st.caption(
+            "Each pair compares two graders on the same response. Pass/fail uses the task "
+            "threshold. A dash means there were no pairs."
+        )
     if not a.has_data:
         st.info("No observations recorded yet.")
         return

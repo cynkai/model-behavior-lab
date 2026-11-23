@@ -10,6 +10,7 @@ from __future__ import annotations
 import difflib
 import hashlib
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -23,12 +24,14 @@ from mblab.formatting import (
     METRIC_NAMES,
     METRIC_UNITS,
     VERDICT_SHORT,
+    agreement_cells,
     interval_text,
     method_text,
     metric_value,
     pct,
     pct_ci,
     position_text,
+    rubric_points,
     seconds,
     tokens,
 )
@@ -69,7 +72,7 @@ def _cell(value: object) -> str:
     return text.replace("|", "\\|").replace("\n", " ")
 
 
-def md_table(headers: list[str], rows: list[list[object]]) -> str:
+def md_table(headers: list[str], rows: Sequence[Sequence[object]]) -> str:
     lines = [
         "| " + " | ".join(_cell(h) for h in headers) + " |",
         "|" + "|".join("---" for _ in headers) + "|",
@@ -101,7 +104,7 @@ def scoring_text(task) -> str:
     if isinstance(rule, ExactMatchScoring):
         return "exact match after normalization (" + ", ".join(rule.normalize) + ")"
     if isinstance(rule, ManualScoring):
-        return f"manual, {rule.max_points:g} points, pass ≥ {rule.pass_threshold:g}: {rule.rubric}"
+        return f"manual, {rubric_points(rule.max_points)} points, pass ≥ {rubric_points(rule.pass_threshold)}: {rule.rubric}"
     return rule.method
 
 
@@ -379,7 +382,13 @@ def _method(a: Analysis) -> list[str]:
 def _results(a: Analysis) -> list[str]:
     out = ["## 6. Results", ""]
     if not a.has_data:
-        return [*out, NO_DATA, ""]
+        note = (
+            "_No included observations are available for performance results. "
+            "Manual grading coverage is shown below._"
+            if a.grading_agreement
+            else NO_DATA
+        )
+        return [*out, note, "", *_grading_agreement(a)]
     conf = int(a.settings.confidence * 100)
     planned = len(a.plan.runs) if a.plan else 0
     inc = a.included
@@ -473,7 +482,38 @@ def _results(a: Analysis) -> list[str]:
         ]
     out += _api_results(a) if api else _label_results(a)
     out += ["### 6.6 Pairwise differences (descriptive)", ""]
-    return out + _rest_of_results(a, conf)
+    return out + _rest_of_results(a, conf) + _grading_agreement(a)
+
+
+def _grading_agreement(a: Analysis) -> list[str]:
+    if not a.grading_agreement:
+        return []
+    rows = [agreement_cells(task) for task in a.grading_agreement]
+    return [
+        "### 6.10 Manual inter-rater agreement",
+        "",
+        md_table(
+            [
+                "Task",
+                "Eligible runs",
+                "At least one grader",
+                "At least two graders",
+                "Grader pairs",
+                "Exact point agreement",
+                "Pass/fail agreement",
+            ],
+            rows,
+        ),
+        "",
+        "Coverage counts included, completed responses to manually scored tasks. Each unordered "
+        "grader pair on the same response contributes once, so responses with more than two "
+        "ratings carry more weight. Cells show matching pairs / all pairs and the percentage. "
+        "Exact agreement compares points. Pass/fail agreement uses the task's pass threshold. "
+        "These descriptive metrics measure agreement only. They cannot establish grading "
+        "correctness or reliability. An em dash means no eligible response has two valid "
+        "ratings, leaving no pairs to compare.",
+        "",
+    ]
 
 
 def _api_results(a: Analysis) -> list[str]:

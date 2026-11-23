@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
+import yaml
 
 from mblab.plan import generate_plan
 from mblab.records import build_record
@@ -64,3 +65,34 @@ def study_dir(tmp_path: Path, definition: ExperimentDefinition, plan: RunPlan) -
 
 def write_records(root: Path, records: list[RunRecord]) -> None:
     write_jsonl(root / "records.jsonl", records)
+
+
+@pytest.fixture
+def manual_study(tmp_path: Path) -> Path:
+    data = yaml.safe_load(template_text())
+    data["tasks"].append(
+        {
+            "id": "T7",
+            "title": "Explain the trip calculation",
+            "prompt": "Explain how to compute the minutes between 09:47 and 14:12.",
+            "scoring": {
+                "method": "manual",
+                "rubric": "2 = correct method and result; 1 = minor slip; 0 = wrong",
+                "max_points": 2,
+                "pass_threshold": 2,
+            },
+        }
+    )
+    definition = ExperimentDefinition.model_validate(data)
+    plan = generate_plan(definition, now=FIXED_NOW)
+    root = tmp_path / "manual"
+    root.mkdir()
+    (root / "experiment.yaml").write_text(yaml.safe_dump(data), encoding="utf-8")
+    save_plan(plan, root / "plan.json")
+    runs = [r for r in plan.runs if r.task_id == "T7" and r.condition_id in {"A", "C"}]
+    records = [
+        make_record(definition, plan, r.run_id, response_text=f"Explanation {r.run_id}")
+        for r in runs
+    ]
+    write_records(root, records)
+    return root

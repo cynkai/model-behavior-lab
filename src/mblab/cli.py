@@ -22,6 +22,7 @@ from rich.markup import escape
 from rich.table import Table
 
 from mblab import api_runner, install_hint
+from mblab.agreement import summarize_agreement
 from mblab.analysis import LABEL_CLASSES, Analysis, AnalysisSettings, analyze
 from mblab.benchmark import (
     BENCHMARK_FILE,
@@ -43,6 +44,7 @@ from mblab.formatting import (
     METRIC_NAMES,
     METRIC_UNITS,
     VERDICT_SHORT,
+    agreement_cells,
     interval_text,
     method_text,
     metric_value,
@@ -1175,6 +1177,32 @@ def grade_import(
             append_jsonl(s.grades_path, result.grades)
     console.print(
         f"Imported {len(result.grades)} grade(s); {result.skipped_blank} row(s) without points."
+    )
+
+
+@grade_app.command("agreement")
+@_errors
+def grade_agreement(study: StudyOpt = Path(".")) -> None:
+    """Show grading coverage and pairwise agreement for each manually scored task."""
+    s = Study.load(study)
+    if s.is_synthetic():
+        console.print(f"[bold red]{DEMO_BANNER}[/]")
+    if s.definition.pilot:
+        console.print(f"[bold yellow]{PILOT_BANNER}[/]")
+    _print_validation_summary(validate_study(s))
+    summaries = summarize_agreement(s)
+    if not summaries:
+        console.print("This study has no manually scored tasks.")
+        return
+    table = Table(
+        "Task", "Eligible", "Graded", "2+ graders", "Pairs", "Same points", "Same decision"
+    )
+    for task in summaries:
+        table.add_row(*(str(cell) for cell in agreement_cells(task)))
+    console.print(table)
+    console.print(
+        "Each pair compares two graders on the same response. Same decision means both passed "
+        "or both failed the task threshold. A dash means there were no pairs."
     )
 
 

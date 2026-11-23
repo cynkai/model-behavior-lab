@@ -14,8 +14,8 @@ from mblab.dashboard import PAGES
 from mblab.demo import create_demo_study
 from mblab.formatting import md_text
 from mblab.plan import generate_plan
-from mblab.schema import ExperimentDefinition
-from mblab.study import Study, save_plan, template_text
+from mblab.schema import ExperimentDefinition, ManualGrade
+from mblab.study import Study, append_jsonl, save_plan, template_text
 
 from .conftest import FIXED_NOW, make_record, write_records
 
@@ -45,6 +45,34 @@ def _answer_per_run_confounders(at: AppTest, value: str = "none") -> None:
     for box in at.selectbox:
         if box.value is None:
             box.set_value(value)
+
+
+def test_task_page_shows_manual_coverage_and_agreement(monkeypatch, manual_study):
+    study = Study.load(manual_study)
+    page = _goto(_app(monkeypatch, manual_study), "Task-level results")
+    empty = page.dataframe[0].value.iloc[0]
+    assert empty["eligible runs"] == 6 and empty["grader pairs"] == 0
+    assert empty["exact point agreement"] == "—"
+    append_jsonl(
+        study.grades_path,
+        [
+            ManualGrade(
+                run_id=study.records[0].run_id,
+                grader_id=grader,
+                points=points,
+                max_points=2,
+                graded_at=FIXED_NOW,
+                blind=True,
+            )
+            for grader, points in (("a", 0), ("b", 1))
+        ],
+    )
+    page.run()
+    assert not page.exception
+    row = page.dataframe[0].value.iloc[0]
+    assert row["task"] == "T7" and row["runs with 2+ graders"] == 1
+    assert row["exact point agreement"] == "0/1 (0%)"
+    assert row["pass/fail agreement"] == "1/1 (100%)"
 
 
 def test_every_page_renders_demo_data_with_synthetic_banner(monkeypatch, tmp_path):

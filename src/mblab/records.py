@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 import re
+from collections import Counter
+from collections.abc import Iterator
 from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from mblab.schema import ExperimentDefinition, PlannedRun, RunPlan, RunRecord
+
+if TYPE_CHECKING:
+    from mblab.study import Study
 
 _DURATION_PART = re.compile(
     r"(\d+(?:[.,]\d+)?)\s*"
@@ -134,3 +139,43 @@ def condition_instructions(definition: ExperimentDefinition, run: PlannedRun) ->
         steps.append("Do NOT use a per-message selection (plain tap on send).")
     steps.append("Paste the prompt exactly as shown, start the stopwatch, and send.")
     return steps
+
+
+def unplaced_records(study: Study) -> dict[str, list[str]]:
+    """Records analysis cannot place, by reason, as run ids in file order.
+
+    A record is left out of every number if its run is not planned (or its task is no
+    longer defined), if it disagrees with its plan entry on the experiment, condition,
+    selections, task, or repetition (a record from another study or a pilot, or an
+    edited condition), or if the run has more than one record (no copy is preferred
+    over another). `mblab validate` reports each of these as an error.
+    """
+    plan_runs = study.plan.by_run_id() if study.plan else {}
+    task_ids = {t.id for t in study.definition.tasks}
+    copies = Counter(r.run_id for r in study.records)
+    out: dict[str, list[str]] = {}
+    for rec in study.records:
+        run = plan_runs.get(rec.run_id)
+        if run is None or rec.task_id not in task_ids:
+            reason = "run not planned or task not defined"
+        elif copies[rec.run_id] > 1:
+            reason = "several records for one run"
+        elif identity_conflicts(rec, run):
+            reason = "identity differs from the plan"
+        else:
+            continue
+        out.setdefault(reason, []).append(rec.run_id)
+    return out
+
+
+def included_completions(study: Study, left_out: set[str] | None = None) -> Iterator[RunRecord]:
+    """Yield completed, protocol-adherent records that can be placed in the study plan."""
+    if left_out is None:
+        left_out = {run_id for ids in unplaced_records(study).values() for run_id in ids}
+    for record in study.records:
+        if (
+            record.run_id not in left_out
+            and not record.excluded
+            and record.response_status == "completed"
+        ):
+            yield record

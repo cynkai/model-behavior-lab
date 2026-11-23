@@ -146,6 +146,7 @@ mblab report -s my-study
 | `mblab import FILE` | 채운 CSV, JSON 배열, JSON Lines 가져오기 — 모든 행이 유효해야만 가져옴(`--dry-run`, `--replace`, `--default-tz`) |
 | `mblab validate` | 정의·계획·기록·채점 검사(`--strict`는 경고도 실패 처리) |
 | `mblab grade export` / `mblab grade import SHEET` | 조건 정보를 뺀 블라인드 채점지 생성과 점수 가져오기 |
+| `mblab grade agreement -s STUDY` | 과제별 수동 채점 현황, 점수 일치도, 통과 여부 일치도 |
 | `mblab analyze [--json FILE]` | 응답 채점 후 조건별 요약(불확실성 포함) |
 | `mblab export [--format csv\|json]` | 기록된 실행마다 한 행, 점수 포함 |
 | `mblab report` | Markdown 보고서(`reports/report.md`). 내용이 다른 기존 보고서는 `--force` 없이 덮어쓰지 않고, `--check FILE`은 파일을 쓰지 않고 기존 보고서와 새로 만든 보고서를 비교 |
@@ -156,6 +157,24 @@ mblab report -s my-study
 CSV의 시각에 UTC 오프셋이 없으면 `--default-tz +09:00` 또는 `--default-tz Asia/Seoul`처럼
 시간대를 지정하세요. 시계 조정으로 같은 시각이 두 번 나타나거나 특정 시각이 생략되는 경우에는
 기록된 시각을 확인하고 해당 행에 UTC 오프셋을 직접 입력하세요.
+
+### 수동 채점의 평가자 간 일치도
+
+점수를 가져온 뒤 `mblab grade agreement -s STUDY`를 실행하세요. Markdown 보고서와
+대시보드의 과제 화면에서도 같은 과제별 집계와 일치율을 볼 수 있습니다.
+`mblab analyze -s STUDY --json FILE`은 `grading_agreement`에 집계 수치를 저장합니다.
+
+한 응답을 채점한 유효한 평가자들을 순서 없는 쌍으로 묶어 한 번씩 비교합니다.
+평가자가 세 명이면 세 쌍이므로 평가자가 많은 응답의 비중이 커집니다. 점수 일치도는
+점수가 같은지 비교하고, 통과 여부 일치도는 각 점수가 과제의 `pass_threshold` 이상인지
+비교합니다. 기준이 2점이고 점수가 1, 2, 3점이면 점수 일치는 0/3, 통과 여부 일치는
+1/3입니다.
+
+분석에 포함된 완료 응답을 집계합니다. 점수의 `max_points`가 채점 기준과 같아야 하며,
+같은 실행과 평가자의 중복 점수는 모두 제외합니다. 블라인드가 아닌 점수도 포함합니다.
+유효한 평가자가 0명이나 1명이면 비교 쌍이 없어 일치율을 대시(—)로 표시합니다.
+이 기술통계만으로 채점의 정확성이나 신뢰성을 입증할 수 없습니다.
+자세한 규칙은 [방법론](methodology.md#manual-inter-rater-agreement)(영문)에 있습니다.
 
 ## 실험 디렉터리
 
@@ -423,6 +442,7 @@ Streamlit 사용 통계 전송은 끈 상태로 시작합니다. 화면 구성:
   방식, `mblab run-api`
 - [x] 독립적으로 계산한 정답과 사람이 기록한 실행으로 이루어진 벤치마크 — `mblab benchmark`
   (Benchmark 01, 예비 결과)
+- [x] 수동 채점의 평가자 간 일치도 — `mblab grade agreement`
 
 아직 구현되지 않았습니다. 데이터 모델이 실행 방식을 구분하고 있어 UI 실험을 바꾸지 않고
 추가할 수 있습니다.
@@ -433,7 +453,6 @@ Streamlit 사용 통계 전송은 끈 상태로 시작합니다. 화면 구성:
 - [ ] 여러 사람의 재현 결과 모으기, GitHub Pages로 보고서 공개
 - [ ] 클라이언트·모델 버전 변화에 따른 동작 변화 감지
 - [ ] 문제 묶음과 벤치마크 데이터셋 플러그인
-- [ ] 수동 채점의 평가자 간 일치도
 
 ## 라이선스
 

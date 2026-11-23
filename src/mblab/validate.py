@@ -17,8 +17,9 @@ from typing import Any, Literal
 
 from mblab.plan import diff_snapshots, planned_prompt
 from mblab.privacy import scan_text
-from mblab.records import identity_conflicts
-from mblab.schema import RunRecord
+from mblab.records import identity_conflicts, included_completions
+from mblab.schema import ManualGrade, RunRecord
+from mblab.scoring import usable_manual_grades
 from mblab.study import Study
 
 Severity = Literal["error", "warning", "info"]
@@ -496,7 +497,9 @@ def _check_grades(study: Study, report: ValidationReport) -> None:
     records_by_id: dict[str, RunRecord] = {r.run_id: r for r in study.records}
     tasks = {t.id: t for t in study.definition.tasks}
     seen_pairs: Counter[tuple[str, str]] = Counter()
+    grades_by_run: dict[str, list[ManualGrade]] = defaultdict(list)
     for grade in study.grades:
+        grades_by_run[grade.run_id].append(grade)
         seen_pairs[(grade.run_id, grade.grader_id)] += 1
         rec = records_by_id.get(grade.run_id)
         if rec is None or rec.task_id not in tasks:
@@ -517,7 +520,7 @@ def _check_grades(study: Study, report: ValidationReport) -> None:
                 "error",
                 "grade_scale_mismatch",
                 f"Run {grade.run_id}: grade uses max_points={grade.max_points:g}, task "
-                f"{task.id} uses {task.scoring.max_points:g}.",
+                f"{task.id} uses {task.scoring.max_points:g}. The grade is ignored.",
                 grade.run_id,
             )
     for (run_id, grader), count in seen_pairs.items():
@@ -525,18 +528,16 @@ def _check_grades(study: Study, report: ValidationReport) -> None:
             report.add(
                 "error",
                 "duplicate_grade",
-                f"Grader {grader} graded run {run_id} {count} times.",
+                f"Grader {grader} graded run {run_id} {count} times. "
+                "Every copy from this grader is ignored until the duplicate is resolved.",
                 run_id,
             )
 
-    graded = {g.run_id for g in study.grades}
     pending = [
         r.run_id
-        for r in study.records
-        if r.task_id in tasks
-        and tasks[r.task_id].scoring.method == "manual"
-        and r.response_status == "completed"
-        and r.run_id not in graded
+        for r in included_completions(study)
+        if tasks[r.task_id].scoring.method == "manual"
+        and not usable_manual_grades(r.run_id, tasks[r.task_id].scoring, grades_by_run[r.run_id])
     ]
     if pending:
         report.add(

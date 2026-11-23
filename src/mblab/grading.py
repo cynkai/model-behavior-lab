@@ -22,8 +22,9 @@ from pathlib import Path
 from uuid import uuid4
 
 from mblab.csvcells import from_row, to_cell
+from mblab.formatting import rubric_points
 from mblab.plan import seeded_shuffle
-from mblab.records import parse_decimal
+from mblab.records import included_completions, parse_decimal
 from mblab.schema import ManualGrade, ManualScoring, RunRecord, Task
 from mblab.study import GRADING_DIR, Study, StudyError, atomic_write_bytes, atomic_write_text
 
@@ -48,8 +49,8 @@ def _grading_material(task: Task, rule: ManualScoring, record: RunRecord) -> dic
         "task_id": task.id,
         "task_title": task.title,
         "rubric": rule.rubric,
-        "max_points": f"{rule.max_points:g}",
-        "pass_threshold": f"{rule.pass_threshold:g}",
+        "max_points": rubric_points(rule.max_points),
+        "pass_threshold": rubric_points(rule.pass_threshold),
         "prompt_text": record.prompt_text,
         "response_text": record.response_text or "",
     }
@@ -62,11 +63,7 @@ def export_blind_sheet(
     manual = {t.id: t for t in study.definition.tasks if isinstance(t.scoring, ManualScoring)}
     if not manual:
         raise StudyError("no task uses `method: manual`; there is nothing to grade by hand")
-    candidates = [
-        r
-        for r in study.records
-        if r.task_id in manual and r.response_status == "completed" and not r.excluded
-    ]
+    candidates = [r for r in included_completions(study) if r.task_id in manual]
     if not candidates:
         raise StudyError("no completed responses for manually graded tasks yet")
     rng = random.Random(plan.seed + 1 if seed is None else seed)
@@ -173,7 +170,7 @@ def import_blind_sheet(
 ) -> GradeImport:
     result = GradeImport()
     sheet_id, entries = _load_blind_key(study, key)
-    records = {r.run_id: r for r in study.records}
+    eligible = {r.run_id: r for r in included_completions(study)}
     existing = {(g.run_id, g.grader_id) for g in study.grades}
     now = now or datetime.now().astimezone()
     try:
@@ -197,20 +194,18 @@ def import_blind_sheet(
                 result.skipped_blank += 1
                 continue
             run_id = entries.get(gid)
-            if run_id is None or run_id not in records:
+            if run_id is None:
                 result.errors.append(f"row {number}: unknown grading_id {gid!r}")
                 continue
-            record = records[run_id]
+            record = eligible.get(run_id)
+            if record is None:
+                result.errors.append(f"row {number}: response is no longer eligible for grading")
+                continue
             task = study.definition.task(record.task_id)
             if not isinstance(task.scoring, ManualScoring):
                 result.errors.append(f"row {number}: task {task.id} is not manually graded")
                 continue
             if sheet_id is not None:
-                if record.response_status != "completed" or record.excluded:
-                    result.errors.append(
-                        f"row {number}: response is no longer eligible for grading"
-                    )
-                    continue
                 changed_field = _material_difference(
                     row, _grading_material(task, task.scoring, record)
                 )
@@ -220,7 +215,7 @@ def import_blind_sheet(
                         "Export a fresh sheet to grade a changed response or rubric"
                     )
                     continue
-            grader = (row.get("grader_id") or "").strip() or (grader_id or "")
+            grader = (row.get("grader_id") or "").strip() or (grader_id or "").strip()
             if not grader:
                 result.errors.append(f"row {number}: grader_id missing (column or --grader)")
                 continue

@@ -19,16 +19,18 @@ Outcomes are kept apart on purpose:
 from __future__ import annotations
 
 import re
+from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
 from decimal import Decimal
-from statistics import fmean
+from statistics import mean
 from typing import Literal
 
 from mblab.schema import (
     DateScoring,
     ExactMatchScoring,
     ManualGrade,
+    ManualScoring,
     NumericScoring,
     RegexScoring,
     RunRecord,
@@ -233,6 +235,20 @@ def score_automatic(task: Task, response_text: str) -> ScoreResult:
     return _scored(ok, answer, why, f"{value:g}")
 
 
+def usable_manual_grades(
+    run_id: str, rule: ManualScoring, grades: Sequence[ManualGrade]
+) -> list[ManualGrade]:
+    """Keep matching-scale grades for this run, excluding every duplicate grader entry."""
+    copies = Counter((grade.run_id, grade.grader_id) for grade in grades)
+    return [
+        grade
+        for grade in grades
+        if grade.run_id == run_id
+        and copies[(grade.run_id, grade.grader_id)] == 1
+        and grade.max_points == rule.max_points
+    ]
+
+
 def score_record(task: Task, record: RunRecord, grades: Sequence[ManualGrade] = ()) -> ScoreResult:
     if record.response_status != "completed":
         return ScoreResult(
@@ -242,18 +258,19 @@ def score_record(task: Task, record: RunRecord, grades: Sequence[ManualGrade] = 
         return score_automatic(task, record.response_text)
 
     rule = task.scoring
-    if not grades:
+    usable = usable_manual_grades(record.run_id, rule, grades)
+    if not usable:
         return ScoreResult("pending_manual", None, None, None, "awaiting manual grade", "none")
-    mean_points = fmean(g.points for g in grades)
-    disagreement = len({g.points for g in grades}) > 1
+    mean_points = mean(g.points for g in usable)
+    disagreement = len({g.points for g in usable}) > 1
     return ScoreResult(
         status="scored",
         correct=mean_points >= rule.pass_threshold,
         score=mean_points / rule.max_points,
         extracted_answer=None,
-        detail=f"mean {mean_points:g}/{rule.max_points:g} from {len(grades)} grade(s)",
+        detail=f"mean {mean_points:g}/{rule.max_points:g} from {len(usable)} grade(s)",
         source="manual",
-        n_graders=len(grades),
+        n_graders=len(usable),
         grader_disagreement=disagreement,
     )
 

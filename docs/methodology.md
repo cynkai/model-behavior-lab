@@ -153,6 +153,39 @@ timestamp, label, or timing. The mapping is in a separate key file. Several grad
 grade the same response; the mean is used and disagreements are counted. Blinding hides
 metadata, not style: response length or tone may still hint at the condition.
 
+### Manual inter-rater agreement
+
+`mblab grade agreement -s STUDY`, the Markdown report, and the dashboard's task page
+show descriptive agreement separately for each manual task in definition order.
+`mblab analyze -s STUDY --json FILE` includes a `grading_agreement` list with `task_id`,
+`eligible_runs`, `graded_runs`, `multi_rated_runs`, `pairs`, `exact_matches`, and
+`decision_matches`. The six counts are integers. Grader identities and raw text are
+absent from this summary.
+
+Eligible runs are completed responses included in the analysis. Unplaced records,
+duplicate run records, protocol deviations, errors, refusals, and incomplete responses
+are excluded. A usable grade must parse successfully, belong to the response, and have
+the task's `max_points`. Grader IDs are case-sensitive and ignore surrounding whitespace.
+All entries for a repeated run and grader are discarded, even
+when their points agree or one uses the wrong scale. Both blind and unblinded grades
+are eligible. The scoring mean uses this same grade filter.
+
+`graded_runs` counts eligible responses with at least one usable grade and
+`multi_rated_runs` counts those with at least two. Every unordered pair of usable
+graders on the same response contributes once, giving `n * (n - 1) / 2` pairs for
+`n` graders. Counts are summed within each task, so responses with more graders carry
+more weight. Comparisons never cross responses or tasks. Exact agreement requires
+equal points. Decision agreement requires both scores to be at least `pass_threshold`
+or both to be below it.
+
+For one response scored 1, 2, and 3 with a threshold of 2, there are three pairs.
+None has equal points, and the pair scoring 2 and 3 agrees on passing. Exact agreement
+is 0/3 (0%) and decision agreement is 1/3 (shown as 33%). Each percentage uses all pairs for
+that task as its denominator. Zero or one usable grader contributes no pairs. Tasks
+with no pairs retain their coverage counts and show an em dash for agreement.
+Automatic-only studies omit this summary. These metrics are descriptive and cannot
+establish grading correctness or reliability.
+
 ## 7. Metrics
 
 | Metric | Definition |

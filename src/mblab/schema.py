@@ -37,6 +37,7 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    StringConstraints,
     field_validator,
     model_serializer,
     model_validator,
@@ -302,8 +303,10 @@ class SequenceScoring(StrictModel):
 class ManualScoring(StrictModel):
     method: Literal["manual"]
     rubric: str = Field(min_length=1)
-    max_points: float = Field(gt=0)
-    pass_threshold: float = Field(gt=0, description="Points needed to count as task success.")
+    max_points: float = Field(gt=0, allow_inf_nan=False)
+    pass_threshold: float = Field(
+        gt=0, allow_inf_nan=False, description="Points needed to count as task success."
+    )
 
     @model_validator(mode="after")
     def _threshold_in_range(self) -> ManualScoring:
@@ -867,7 +870,7 @@ class ManualGrade(VersionedModel):
     run_id: str = Field(min_length=1)
     points: float = Field(ge=0, allow_inf_nan=False)
     max_points: float = Field(gt=0, allow_inf_nan=False)
-    grader_id: str = Field(min_length=1)
+    grader_id: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
     blind: bool
     graded_at: AwareDatetime
     notes: str | None = None

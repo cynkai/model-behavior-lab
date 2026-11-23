@@ -9,13 +9,14 @@ template defined here, so the wording can be reviewed in one place.
 from __future__ import annotations
 
 from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import Any, Literal
 
 import pandas as pd
 
+from mblab.agreement import TaskAgreement, summarize_agreement
 from mblab.plan import diff_snapshots
-from mblab.records import identity_conflicts
+from mblab.records import unplaced_records
 from mblab.schema import AnalysisPlan, ExperimentDefinition, RunPlan
 from mblab.scoring import score_record
 from mblab.stats import (
@@ -170,6 +171,7 @@ class Analysis:
     sensitivity: SensitivityCheck | None = None
     #: How closely the runs followed the planned random order.
     order: OrderAdherence | None = None
+    grading_agreement: list[TaskAgreement] = field(default_factory=list)
 
     @property
     def included(self) -> pd.DataFrame:
@@ -207,6 +209,11 @@ class Analysis:
             "labels": frame(self.labels),
             "comparisons": frame(self.comparisons),
             **({"api_reported": frame(self.api)} if not self.api.empty else {}),
+            **(
+                {"grading_agreement": [asdict(task) for task in self.grading_agreement]}
+                if self.grading_agreement
+                else {}
+            ),
             "override_assessments": [
                 {
                     "condition_id": o.condition_id,
@@ -334,34 +341,7 @@ def _api_columns(rec: Any) -> dict[str, Any]:
     }
 
 
-def unplaced_records(study: Study) -> dict[str, list[str]]:
-    """Records analysis cannot place, by reason, as run ids in file order.
-
-    A record is left out of every number if its run is not planned (or its task is no
-    longer defined), if it disagrees with its plan entry on the experiment, condition,
-    selections, task, or repetition (a record from another study or a pilot, or an
-    edited condition), or if the run has more than one record (no copy is preferred
-    over another). `mblab validate` reports each of these as an error.
-    """
-    plan_runs = study.plan.by_run_id() if study.plan else {}
-    task_ids = {t.id for t in study.definition.tasks}
-    copies = Counter(r.run_id for r in study.records)
-    out: dict[str, list[str]] = {}
-    for rec in study.records:
-        run = plan_runs.get(rec.run_id)
-        if run is None or rec.task_id not in task_ids:
-            reason = "run not planned or task not defined"
-        elif copies[rec.run_id] > 1:
-            reason = "several records for one run"
-        elif identity_conflicts(rec, run):
-            reason = "identity differs from the plan"
-        else:
-            continue
-        out.setdefault(reason, []).append(rec.run_id)
-    return out
-
-
-def build_results(study: Study) -> pd.DataFrame:
+def build_results(study: Study, left_out: set[str] | None = None) -> pd.DataFrame:
     definition = study.definition
     plan_runs = study.plan.by_run_id() if study.plan else {}
     tasks = {t.id: t for t in definition.tasks}
@@ -371,7 +351,8 @@ def build_results(study: Study) -> pd.DataFrame:
     confounder_ids = [c.id for c in definition.confounders]
     is_api = definition.execution_method == "official_api"
 
-    left_out = {run_id for ids in unplaced_records(study).values() for run_id in ids}
+    if left_out is None:
+        left_out = {run_id for ids in unplaced_records(study).values() for run_id in ids}
     rows = []
     for rec in study.records:
         if rec.run_id in left_out:  # see unplaced_records; validation reports them
@@ -1718,7 +1699,9 @@ def analyze(study: Study, settings: AnalysisSettings | None = None) -> Analysis:
     if settings is None:
         settings = AnalysisSettings.preregistered(study.definition, study.plan)
     definition = study.definition
-    results = build_results(study)
+    unplaced = unplaced_records(study)
+    left_out = {run_id for ids in unplaced.values() for run_id in ids}
+    results = build_results(study, left_out)
     inc = results[~results["excluded"]] if not results.empty else results
     measured = inc[inc["latency_method"] != "not_measured"] if not inc.empty else inc
     primary = measured["latency_method"].mode().iloc[0] if not measured.empty else None
@@ -1747,7 +1730,8 @@ def analyze(study: Study, settings: AnalysisSettings | None = None) -> Analysis:
         api=summarize_api(definition, results),
         validation=validate_study(study),
         primary_latency_method=primary,
-        left_out=unplaced_records(study),
+        left_out=unplaced,
+        grading_agreement=summarize_agreement(study, left_out),
         confounder_flags=confounder_flags(definition, results),
         order=order_adherence(study),
         n_records_changed_definition=sum(

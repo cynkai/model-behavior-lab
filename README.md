@@ -164,6 +164,7 @@ argument. `mblab <command> --help` lists all options.
 | `mblab import FILE` | Import a filled CSV, a JSON array, or JSON lines — all rows valid or nothing is imported (`--dry-run`, `--replace`, `--default-tz`) |
 | `mblab validate` | Check definition, plan, records, and grades (`--strict` fails on warnings) |
 | `mblab grade export` / `mblab grade import SHEET` | Blind grading sheet without condition information, and importing the points |
+| `mblab grade agreement -s STUDY` | Per-task manual grading coverage, exact point agreement, and pass/fail agreement |
 | `mblab analyze [--json FILE]` | Score responses and summarise per condition, with uncertainty |
 | `mblab export [--format csv\|json]` | One row per recorded run, with its score |
 | `mblab report` | Markdown report (`reports/report.md`); never replaces a report with different content unless `--force`, and `--check FILE` compares an existing report with a fresh one instead of writing |
@@ -174,6 +175,24 @@ argument. `mblab <command> --help` lists all options.
 For CSV timestamps without a UTC offset, pass `--default-tz +09:00` or use a named zone
 such as `--default-tz Asia/Seoul`. If a clock change repeats or skips a local time in a
 named zone, check the recorded time and put the explicit UTC offset in that row.
+
+### Manual grading agreement
+
+Run `mblab grade agreement -s STUDY` after importing grades. The Markdown report and
+the dashboard's task page show the same per-task counts and agreement percentages.
+`mblab analyze -s STUDY --json FILE` saves the counts in `grading_agreement`.
+
+Each unordered pair of valid graders on one response contributes once. Three graders
+contribute three pairs, so responses with more graders carry more weight. Exact point
+agreement compares their scores. Pass/fail agreement compares each score with the task's
+inclusive `pass_threshold`. For scores 1, 2, and 3 with a threshold of 2, exact agreement
+is 0/3 and pass/fail agreement is 1/3.
+
+Coverage uses included, completed responses. Grades must match the rubric's `max_points`,
+and every duplicate entry for the same run and grader is excluded. Unblinded grades
+are included. Zero or one valid grader yields no pairs, shown as an em dash. These
+descriptive counts cannot establish grading correctness or reliability.
+See [methodology](docs/methodology.md#manual-inter-rater-agreement) for the full rules.
 
 ## Study directory
 
@@ -475,6 +494,7 @@ The *Result submission* issue templates list what to include.
   its own execution method — `mblab run-api`
 - [x] Benchmarks with an independently computed ground truth, runs recorded by hand —
   `mblab benchmark` (Benchmark 01, preliminary)
+- [x] Inter-rater agreement for manual grading — `mblab grade agreement`
 
 Not implemented yet; the data model separates execution methods so these can be added
 without changing UI experiments:
@@ -485,7 +505,6 @@ without changing UI experiments:
 - [ ] Aggregating independent replications; publishing reports on GitHub Pages
 - [ ] Detecting behaviour changes across client or model versions over time
 - [ ] Task packs and benchmark-dataset plugins
-- [ ] Inter-rater agreement for manual grading
 
 ## License
 

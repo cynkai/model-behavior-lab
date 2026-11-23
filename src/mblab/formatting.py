@@ -4,8 +4,12 @@ from __future__ import annotations
 
 import math
 import string
+from typing import TYPE_CHECKING
 
 from mblab.stats import Interval
+
+if TYPE_CHECKING:
+    from mblab.agreement import TaskAgreement
 
 _MARKDOWN_ESCAPES = str.maketrans({c: "\\" + c for c in string.punctuation})
 
@@ -58,6 +62,27 @@ def _missing(value: object) -> bool:
 
 def pct(value: float | None) -> str:
     return "—" if _missing(value) else f"{100 * value:.0f}%"
+
+
+def rubric_points(value: float) -> str:
+    """Preserve the threshold or scale shown to a grader, including fractional points."""
+    return str(value).removesuffix(".0")
+
+
+def pair_agreement(matches: int, pairs: int) -> str:
+    return f"{matches}/{pairs} ({pct(matches / pairs)})" if pairs else "—"
+
+
+def agreement_cells(task: TaskAgreement) -> tuple[str, int, int, int, int, str, str]:
+    return (
+        task.task_id,
+        task.eligible_runs,
+        task.graded_runs,
+        task.multi_rated_runs,
+        task.pairs,
+        pair_agreement(task.exact_matches, task.pairs),
+        pair_agreement(task.decision_matches, task.pairs),
+    )
 
 
 def pct_ci(low: float | None, high: float | None) -> str:

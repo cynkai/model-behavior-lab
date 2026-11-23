@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Blind grading
+
+- Each new grading sheet identifies its matching key. Imports reject mismatched exports
+  and scored rows whose response, prompt or rubric differs from the current study.
+  Sheets and keys exported together by older versions can still be imported.
+
 ### Reporting repeat benchmark runs
 
 - `mblab benchmark report DIR --report ID` writes one declared report.

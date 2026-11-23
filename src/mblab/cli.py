@@ -1139,8 +1139,11 @@ def grade_export(
     ] = None,
 ) -> None:
     """Write a shuffled grading sheet without condition information, plus a separate key."""
-    s = Study.load(study)
-    sheet, key, n = export_blind_sheet(s, out_dir)
+    if not study.is_dir():
+        raise StudyError(f"study directory {study} does not exist")
+    with write_lock(study, "grade export"):
+        s = Study.load(study)
+        sheet, key, n = export_blind_sheet(s, out_dir)
     console.print(f"Wrote {sheet} ({n} responses) and {key}.")
     console.print("Give graders the sheet only. Keep the key file away from them.")
 

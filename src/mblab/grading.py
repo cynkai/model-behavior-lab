@@ -19,15 +19,17 @@ import random
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from uuid import uuid4
 
 from mblab.csvcells import from_row, to_cell
 from mblab.plan import seeded_shuffle
 from mblab.records import parse_decimal
-from mblab.schema import ManualGrade, ManualScoring
-from mblab.study import GRADING_DIR, Study, StudyError, atomic_write_text
+from mblab.schema import ManualGrade, ManualScoring, RunRecord, Task
+from mblab.study import GRADING_DIR, Study, StudyError, atomic_write_bytes, atomic_write_text
 
 SHEET_COLUMNS = [
     "grading_id",
+    "sheet_id",
     "task_id",
     "task_title",
     "rubric",
@@ -39,6 +41,18 @@ SHEET_COLUMNS = [
     "grader_id",
     "notes",
 ]
+
+
+def _grading_material(task: Task, rule: ManualScoring, record: RunRecord) -> dict[str, str]:
+    return {
+        "task_id": task.id,
+        "task_title": task.title,
+        "rubric": rule.rubric,
+        "max_points": f"{rule.max_points:g}",
+        "pass_threshold": f"{rule.pass_threshold:g}",
+        "prompt_text": record.prompt_text,
+        "response_text": record.response_text or "",
+    }
 
 
 def export_blind_sheet(
@@ -59,14 +73,14 @@ def export_blind_sheet(
     seeded_shuffle(candidates, rng)
 
     out_dir = out_dir or study.root / GRADING_DIR
-    out_dir.mkdir(parents=True, exist_ok=True)
     sheet = out_dir / "blind-sheet.csv"
     key = out_dir / "blind-key.json"
+    sheet_id = f"sheet-{uuid4().hex}"
     entries: dict[str, str] = {}
     # UTF-8 with a byte-order mark, so graders' spreadsheet apps read the text correctly.
     # Cells go through to_cell: a response such as "=HYPERLINK(...)" or "- item" is shown
     # as text in the grader's spreadsheet instead of being run as a formula.
-    with sheet.open("w", encoding="utf-8-sig", newline="") as handle:
+    with io.StringIO(newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=SHEET_COLUMNS)
         writer.writeheader()
         for number, rec in enumerate(candidates, start=1):
@@ -77,18 +91,14 @@ def export_blind_sheet(
             assert isinstance(rule, ManualScoring)
             row = {
                 "grading_id": gid,
-                "task_id": task.id,
-                "task_title": task.title,
-                "rubric": rule.rubric,
-                "max_points": f"{rule.max_points:g}",
-                "pass_threshold": f"{rule.pass_threshold:g}",
-                "prompt_text": rec.prompt_text,
-                "response_text": rec.response_text,
+                "sheet_id": sheet_id,
+                **_grading_material(task, rule, rec),
                 "points": "",
                 "grader_id": "",
                 "notes": "",
             }
             writer.writerow({col: to_cell(value) for col, value in row.items()})
+        atomic_write_bytes(sheet, handle.getvalue().encode("utf-8-sig"))
     atomic_write_text(
         key,
         json.dumps(
@@ -96,6 +106,7 @@ def export_blind_sheet(
                 "experiment_id": study.definition.experiment_id,
                 "created_at": datetime.now().astimezone().isoformat(),
                 "sheet": sheet.name,
+                "sheet_id": sheet_id,
                 "entries": entries,
             },
             indent=2,
@@ -112,6 +123,47 @@ class GradeImport:
     skipped_blank: int = 0
 
 
+def _load_blind_key(study: Study, key: Path) -> tuple[str | None, dict[str, str]]:
+    try:
+        data = json.loads(key.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        raise StudyError(f"key file {key} not found") from None
+    except (OSError, ValueError):
+        raise StudyError(f"could not read grading key {key} as JSON") from None
+    if not isinstance(data, dict):
+        raise StudyError(f"invalid grading key {key}")
+    entries = data.get("entries")
+    sheet_id = data.get("sheet_id")
+    if (
+        not isinstance(entries, dict)
+        or any(not isinstance(value, str) for value in entries.values())
+        or ("sheet_id" in data and (not isinstance(sheet_id, str) or not sheet_id))
+    ):
+        raise StudyError(f"invalid grading key {key}")
+    if data.get("experiment_id") != study.definition.experiment_id:
+        raise StudyError("grading key belongs to a different experiment")
+    return sheet_id, entries
+
+
+def _material_difference(row: dict[str, str], expected: dict[str, str]) -> str | None:
+    """Allow line-ending and numeric formatting changes made by spreadsheet software."""
+    for column, value in expected.items():
+        actual = row.get(column)
+        if actual is None:
+            return column
+        if column in {"max_points", "pass_threshold"}:
+            try:
+                if parse_decimal(actual, column) == float(value):
+                    continue
+            except ValueError:
+                pass
+            return column
+        # The sheet was read in universal-newline mode.
+        if actual != value.replace("\r\n", "\n").replace("\r", "\n"):
+            return column
+    return None
+
+
 def import_blind_sheet(
     study: Study,
     sheet: Path,
@@ -120,9 +172,7 @@ def import_blind_sheet(
     now: datetime | None = None,
 ) -> GradeImport:
     result = GradeImport()
-    if not key.exists():
-        raise StudyError(f"key file {key} not found")
-    entries: dict[str, str] = json.loads(key.read_text(encoding="utf-8"))["entries"]
+    sheet_id, entries = _load_blind_key(study, key)
     records = {r.run_id: r for r in study.records}
     existing = {(g.run_id, g.grader_id) for g in study.grades}
     now = now or datetime.now().astimezone()
@@ -134,8 +184,13 @@ def import_blind_sheet(
             '"CSV UTF-8" and import it again'
         ) from None
     with io.StringIO(sheet_text, newline="") as handle:
-        for number, raw in enumerate(csv.DictReader(handle), start=2):
+        reader = csv.DictReader(handle)
+        if ("sheet_id" in (reader.fieldnames or [])) != (sheet_id is not None):
+            raise StudyError("grading sheet and key are from different exports")
+        for number, raw in enumerate(reader, start=2):
             row = from_row(raw)
+            if sheet_id is not None and row.get("sheet_id") != sheet_id:
+                raise StudyError(f"row {number}: grading sheet and key are from different exports")
             gid = (row.get("grading_id") or "").strip()
             points_text = (row.get("points") or "").strip()
             if not points_text:
@@ -145,10 +200,26 @@ def import_blind_sheet(
             if run_id is None or run_id not in records:
                 result.errors.append(f"row {number}: unknown grading_id {gid!r}")
                 continue
-            task = study.definition.task(records[run_id].task_id)
+            record = records[run_id]
+            task = study.definition.task(record.task_id)
             if not isinstance(task.scoring, ManualScoring):
                 result.errors.append(f"row {number}: task {task.id} is not manually graded")
                 continue
+            if sheet_id is not None:
+                if record.response_status != "completed" or record.excluded:
+                    result.errors.append(
+                        f"row {number}: response is no longer eligible for grading"
+                    )
+                    continue
+                changed_field = _material_difference(
+                    row, _grading_material(task, task.scoring, record)
+                )
+                if changed_field is not None:
+                    result.errors.append(
+                        f"row {number}: {changed_field} does not match the current study. "
+                        "Export a fresh sheet to grade a changed response or rubric"
+                    )
+                    continue
             grader = (row.get("grader_id") or "").strip() or (grader_id or "")
             if not grader:
                 result.errors.append(f"row {number}: grader_id missing (column or --grader)")

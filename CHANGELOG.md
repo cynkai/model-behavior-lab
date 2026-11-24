@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### API token cost estimates
+
+- `mblab cost -s STUDY --rates rates.json [--json]` estimates official-API token costs
+  from a local rate card with decimal-string prices and exact reported model/tier matches.
+  It writes no files and makes no provider API calls. `--json` prints structured JSON
+  to stdout, including the raw rate-card SHA-256.
+- Condition and study summaries show priced/recorded counts, provisional subtotals, and
+  unknown coverage. Eligible deviations and error responses can be priced. Duplicate
+  response IDs, held responses, unreadable lines, unplaced records, and out-of-scope
+  records are excluded with counts. Reasoning tokens remain part of output tokens.
+- Missing cached-input counts allow pricing when input rates are equal or input tokens
+  are zero. Unknown costs stay distinct from priced zeros. One supplied schedule applies
+  to all records, and charges beyond the supplied token rates are not estimated.
+
 ### Manual grading agreement
 
 - `mblab grade agreement -s STUDY`, Markdown reports, and the dashboard's task page show

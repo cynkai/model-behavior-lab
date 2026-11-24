@@ -405,15 +405,56 @@ incomplete. Rate limits, server errors, and failures to connect at all are retri
 read timeout or a dropped connection can come after the API accepted (and billed) the
 request, so such a run is not retried automatically: it is logged in
 `api-unrecorded.jsonl` and held back like a response that could not be recorded.
-The tool does not price anything — prices change — but reports list token totals per
-condition so cost can be computed from the provider's price list. Totals cover every recorded
-response, excluded runs included, because all of them were billed. A billed response
+Reports list token totals per condition, including responses excluded from outcome
+analysis. `mblab cost` estimates token costs with a supplied rate card under the
+coverage rules below. A billed response
 that cannot be turned into a record (for example an unexpected status) is listed in
 `api-unrecorded.jsonl` with its id and token counts, reported as a limitation, and its
 run is held back from resending unless `--resend-unrecorded` is given. Ctrl+C waits
 until a received response is written. Only one command writes to a study at a time,
 and `run-api` reads the study again under that lock, so a run recorded meanwhile is
 skipped instead of being sent (and billed) twice.
+
+### Token cost estimates
+
+`mblab cost -s STUDY --rates rates.json [--json]` is read-only and accepts official-API
+studies. It makes no provider API calls and writes no files. `--json` prints structured
+JSON to stdout. Prices are supplied as nonnegative decimal strings per million tokens
+in USD, with up to 12 digits on each side of the decimal point. The format is illustrated in the
+[README](../README.md#token-cost-estimates).
+
+A rate row matches the exact reported model and service tier. Requested settings do
+not fill missing reported values. One rate schedule applies across the study's
+collection dates. Results include the SHA-256 of the raw rate-card bytes so the supplied
+schedule can be identified. No current provider price is fetched or assumed.
+
+For input tokens I, cached input tokens C, output tokens O, and their rates rI, rC, rO,
+the estimate is `((I - C) × rI + C × rC + O × rO) / 1,000,000`, calculated with exact
+arithmetic. Reasoning tokens are already part of O. For the fictitious USD rates 2,
+0.5, and 6, input 1,000 including 200 cached and output 100 yields 0.0023 USD.
+
+Pricing requires usable input and output counts and a matching rate row. Cached input
+must be between zero and input tokens. A missing cached-input count permits calculation
+when the two input rates are equal or input tokens are zero. Other missing or invalid
+usage remains unknown, as do missing reported model/tier values and unmatched rates.
+A reported total must equal input plus output, and reasoning tokens must fit within output.
+The output lists missing model/tier rate pairs and the number of affected records.
+A subtotal is null if none of its runs could be priced and is zero if measured usage
+at the supplied rates costs zero.
+
+The requested effort for each condition comes from the study definition and is checked
+against the frozen plan. Restore the planned settings if an edit has reassigned a
+condition to a different effort. Coverage follows records that can be placed in the plan.
+Eligible records include protocol deviations and error responses even when outcome analysis excludes
+them. Repeating a nonblank response ID across placed records excludes each copy. Held
+responses in `api-unrecorded.jsonl`, unreadable lines, unplaced records, and records
+outside the official-API scope are counted and never priced. Their costs cannot be
+recovered from the provisional subtotal.
+
+The result reports priced/recorded counts and provisional subtotals by condition and
+for the study. Coverage gaps and their reasons remain visible. Underlying charges
+beyond these token rates, including tool fees, taxes, discounts, and subscription
+charges, are not estimated.
 
 **What it cannot show.** API-reported values are the provider's figures, recorded as
 returned, not independently verified. How the provider applies an effort setting

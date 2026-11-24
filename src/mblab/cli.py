@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import functools
+import json
 import os
 import subprocess
 import sys
@@ -36,6 +37,7 @@ from mblab.benchmark import (
     write_reports,
 )
 from mblab.clipboard import copy_text, paste_text
+from mblab.costs import estimate_costs
 from mblab.csvcells import to_cell
 from mblab.demo import DEMO_BANNER, create_demo_study
 from mblab.exchange import import_file, merge_records, parse_timezone, write_template_csv
@@ -58,6 +60,7 @@ from mblab.grading import export_blind_sheet, import_blind_sheet
 from mblab.pilot import PILOT_BANNER, create_pilot_study, displayed_labels
 from mblab.plan import generate_plan
 from mblab.provenance import code_version
+from mblab.rates import load_rate_card
 from mblab.records import build_record, condition_instructions, next_pending, parse_decimal
 from mblab.report import compare_reports, render_report
 from mblab.schema import PlannedRun, RunPlan, RunRecord
@@ -739,7 +742,7 @@ def run_api(
         )
         console.print(
             "Each real request is billed by the provider for input and output tokens, reasoning "
-            "tokens included. This tool does not estimate cost."
+            "tokens included. After collection, use mblab cost with your token rates."
         )
         return
 
@@ -1030,6 +1033,74 @@ def _print_comparisons(a: Analysis) -> None:
             COMPARISON_STATUS[row.status],
         )
     console.print(table)
+
+
+@app.command("cost")
+@_errors
+def cost_cmd(
+    rates: Annotated[
+        Path,
+        typer.Option("--rates", help="USD token rates by reported model and service tier (JSON)."),
+    ],
+    study: StudyOpt = Path("."),
+    json_output: Annotated[
+        bool, typer.Option("--json", help="Print the estimate and coverage as JSON.")
+    ] = False,
+) -> None:
+    """Estimate token costs by requested reasoning effort from recorded API usage."""
+    result = estimate_costs(Study.load(study), load_rate_card(rates))
+    if json_output:
+        typer.echo(dump_json(result), nl=False)
+        return
+
+    console.print("Estimated API token cost (USD)", style="bold")
+    if result["synthetic_data"]:
+        console.print(DEMO_BANNER, style="bold red")
+    if result["pilot"]:
+        console.print(PILOT_BANNER, style="bold yellow")
+    table = Table("Condition", "Requested effort", "Priced / recorded", "Estimated USD")
+    for row in result["conditions"]:
+        table.add_row(
+            row["condition_id"],
+            row["requested_effort"],
+            f"{row['priced_runs']}/{row['recorded_runs']}",
+            row["estimated_usd"] if row["estimated_usd"] is not None else "—",
+        )
+    total = result["total"]
+    table.add_section()
+    table.add_row(
+        "Total",
+        "",
+        f"{total['priced_runs']}/{total['recorded_runs']}",
+        total["estimated_usd"] if total["estimated_usd"] is not None else "—",
+    )
+    console.print(table)
+    console.print("Amounts cover priced records only. A dash means no record could be priced.")
+    if total["unpriced_reasons"]:
+        reason_text = {
+            "duplicate_response": "repeated response ID",
+            "missing_usage": "missing input or output tokens",
+            "inconsistent_usage": "reported token counts disagree",
+            "unknown_rate": "no matching model and service tier rate",
+            "invalid_cached_tokens": "cached input exceeds total input",
+            "unknown_cached_tokens": "missing cached input count at different input rates",
+        }
+        for reason, count in sorted(total["unpriced_reasons"].items()):
+            console.print(f"Unpriced ({reason_text[reason]}): {count}")
+    for unmatched in result["unmatched_rates"]:
+        model = json.dumps(unmatched["model"])
+        tier = json.dumps(unmatched["service_tier"])
+        console.print(
+            f"  Reported model {model}, service tier {tier}: {unmatched['runs']} run(s)",
+            markup=False,
+        )
+    console.print(
+        f"Outside these totals: {result['unplaced_records']} unplaced record(s), "
+        f"{result['unreadable_records']} unreadable record line(s), "
+        f"{result['unrecorded_attempts']} unrecorded attempt(s), "
+        f"{result['unreadable_unrecorded_attempts']} unreadable attempt line(s)."
+    )
+    console.print(f"Rate card SHA-256: {result['rate_card_sha256']}", markup=False)
 
 
 @app.command("analyze")

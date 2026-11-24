@@ -626,8 +626,8 @@ def summarize_api(definition: ExperimentDefinition, results: pd.DataFrame) -> pd
     """Per condition: what the API reported (official_api studies only).
 
     Counts and medians use only runs where the API returned the value; ``*_n``
-    columns say how many that was. Token sums are given so cost can be worked out
-    from the provider's price list; this tool does not price anything.
+    columns say how many that was. The cost command prices each response separately
+    using its reported model, service tier and cached input count.
     """
     columns = [
         "condition_id",

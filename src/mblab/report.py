@@ -551,8 +551,8 @@ def _api_results(a: Analysis) -> list[str]:
         ),
         "",
         "Values are copied from the API responses and not independently verified. Reasoning "
-        "tokens are part of the output tokens. Token totals are listed so cost can be worked out "
-        "from the provider's price list; this report does not price anything.",
+        "tokens are part of output tokens. Run `mblab cost -s STUDY --rates rates.json` to "
+        "estimate the cost of recorded token usage with a supplied rate card.",
         "",
         "### 6.5 Per-message selection vs. default",
         "",

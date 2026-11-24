@@ -9,7 +9,7 @@
 # COST: every request is billed to the account of the API key in
 # OPENAI_API_KEY — input and output tokens, reasoning tokens included.
 # 3 conditions x 6 tasks x 3 repetitions = 54 requests. Preview them for free
-# with `mblab run-api -s <study> --dry-run`. This tool does not estimate cost.
+# with `mblab run-api -s <study> --dry-run`. Estimate recorded token costs later with `mblab cost -s <study> --rates rates.json`.
 # =============================================================================
 
 schema_version: 1

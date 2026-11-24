@@ -160,6 +160,7 @@ argument. `mblab <command> --help` lists all options.
 | `mblab next [--copy]` | Show the next run: what to set in the client and the exact prompt |
 | `mblab record` | Record one run interactively (`--response-file`, `--paste`, `--run-id`, `--replace`) |
 | `mblab run-api` | Send the pending runs of an official-API study through the OpenAI Responses API (`--dry-run`, `--limit N`, `--min-interval`, `--yes`, `--resend-unrecorded`); needs the `api` extra and `OPENAI_API_KEY` |
+| `mblab cost -s STUDY --rates rates.json [--json]` | Estimate official-API token costs from a local rate card, with coverage counts. `--json` prints structured JSON to stdout |
 | `mblab template` | Write a CSV entry template, one row per planned run |
 | `mblab import FILE` | Import a filled CSV, a JSON array, or JSON lines — all rows valid or nothing is imported (`--dry-run`, `--replace`, `--default-tz`) |
 | `mblab validate` | Check definition, plan, records, and grades (`--strict` fails on warnings) |
@@ -351,9 +352,8 @@ mblab report -s api-study
 ```
 
 - **Cost.** Every request is billed to the account of the key — input and output tokens,
-  with reasoning tokens counted as output. Higher effort usually means more tokens. The
-  tool does not estimate cost; reports list token totals per condition so you can price
-  them with the provider's current price list. A pre-registered `max_output_tokens` caps
+  with reasoning tokens counted as output. Higher effort usually means more tokens. `mblab cost`
+  estimates recorded token costs using a rate card you supply (see below). A pre-registered `max_output_tokens` caps
   each request, and a response that reaches it is recorded as *incomplete* and reported.
   A request that times out or loses its connection may already be billed, so the runner
   does not retry it (it holds the run back, see below). Failures to connect at all, rate
@@ -380,6 +380,47 @@ mblab report -s api-study
 - **UI vs. API.** A study uses one execution method. API results describe API access
   with this account and model id — not the ChatGPT app — and are compared with UI
   studies side by side, never pooled.
+
+### Token cost estimates
+
+`mblab cost -s api-study --rates rates.json` reads an official-API study and a local
+rate card. It shows priced/recorded counts and provisional subtotals per condition and
+for the study. Add `--json` to print structured JSON to stdout. The command writes no
+files and makes no provider API calls.
+
+Save a rate card with decimal-string prices per million tokens. This fictitious USD
+example illustrates the format.
+
+```json
+{
+  "currency": "USD",
+  "rates": [
+    {
+      "model": "example-model",
+      "service_tier": "default",
+      "input_per_million": "2",
+      "cached_input_per_million": "0.5",
+      "output_per_million": "6"
+    }
+  ]
+}
+```
+
+Match model and service tier exactly as reported in `api_reported`. One supplied
+schedule applies to all records, regardless of collection date. The result includes
+the SHA-256 of the raw rate-card bytes. With these example rates, 1,000 input tokens
+including 200 cached tokens and 100 output tokens cost
+`(800 × 2 + 200 × 0.5 + 100 × 6) / 1,000,000 = 0.0023 USD`.
+Reasoning tokens are already included in output tokens.
+
+Eligible records matched to the plan include protocol deviations and error responses.
+Held responses, unreadable lines, unplaced records, and records outside the scope are
+counted and excluded from pricing. All records sharing a reported response ID are
+excluded. Missing or invalid usage and unmatched rates remain unknown, distinct from a
+priced zero. Missing cached-input counts permit pricing when input and cached-input
+rates are equal or input tokens are zero. Underlying charges beyond the supplied token
+rates are not estimated. See [methodology](docs/methodology.md#token-cost-estimates)
+for the calculation and coverage rules.
 
 ## Dashboard
 
@@ -495,12 +536,12 @@ The *Result submission* issue templates list what to include.
 - [x] Benchmarks with an independently computed ground truth, runs recorded by hand —
   `mblab benchmark` (Benchmark 01, preliminary)
 - [x] Inter-rater agreement for manual grading — `mblab grade agreement`
+- [x] Cost per reasoning-effort level (API) with a supplied rate card — `mblab cost`
 
 Not implemented yet; the data model separates execution methods so these can be added
 without changing UI experiments:
 
 - [ ] Anthropic and Google API runners
-- [ ] Cost per reasoning-effort level (API) — reports list token totals; no price data yet
 - [ ] Cross-study comparison: iOS vs. Android vs. web
 - [ ] Aggregating independent replications; publishing reports on GitHub Pages
 - [ ] Detecting behaviour changes across client or model versions over time

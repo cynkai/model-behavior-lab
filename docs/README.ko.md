@@ -128,9 +128,9 @@ mblab report -s my-study
 
 ## 명령어
 
-실험 명령은 모두 `--study/-s DIR`을 받습니다(기본값: 현재 디렉터리 또는 `$MBLAB_STUDY`).
-`mblab benchmark` 명령은 벤치마크 디렉터리를 인자로 받습니다. `mblab <명령> --help`로 전체
-옵션을 볼 수 있습니다.
+대부분의 실험 명령은 `--study/-s DIR`을 받으며 기본값은 현재 디렉터리 또는 `$MBLAB_STUDY`입니다.
+`mblab compare`는 실험 디렉터리 두 개를, `mblab benchmark`는 벤치마크 디렉터리를
+인자로 받습니다. `mblab <명령> --help`로 전체 옵션을 볼 수 있습니다.
 
 | 명령 | 하는 일 |
 |---|---|
@@ -149,6 +149,7 @@ mblab report -s my-study
 | `mblab grade export` / `mblab grade import SHEET` | 조건 정보를 뺀 블라인드 채점지 생성과 점수 가져오기 |
 | `mblab grade agreement -s STUDY` | 과제별 수동 채점 현황, 점수 일치도, 통과 여부 일치도 |
 | `mblab analyze [--json FILE]` | 응답 채점 후 조건별 요약(불확실성 포함) |
+| `mblab compare LEFT RIGHT [--json]` | 호환되는 수동 UI 실험 두 개를 읽기 전용으로 비교. `--json`은 구조화된 JSON을 표준 출력으로 내보냄 |
 | `mblab export [--format csv\|json]` | 기록된 실행마다 한 행, 점수 포함 |
 | `mblab report` | Markdown 보고서(`reports/report.md`). 내용이 다른 기존 보고서는 `--force` 없이 덮어쓰지 않고, `--check FILE`은 파일을 쓰지 않고 기존 보고서와 새로 만든 보고서를 비교 |
 | `mblab dashboard` | 실험 또는 벤치마크 디렉터리의 로컬 웹 대시보드(`dashboard` 추가 설치 필요) |
@@ -158,6 +159,43 @@ mblab report -s my-study
 CSV의 시각에 UTC 오프셋이 없으면 `--default-tz +09:00` 또는 `--default-tz Asia/Seoul`처럼
 시간대를 지정하세요. 시계 조정으로 같은 시각이 두 번 나타나거나 특정 시각이 생략되는 경우에는
 기록된 시각을 확인하고 해당 행에 UTC 오프셋을 직접 입력하세요.
+
+### 수동 UI 실험 두 개 비교하기
+
+`mblab compare ios-study android-study`로 서로 다른 디렉터리에 있는 두 실험의
+조건별 결과를 나란히 봅니다.
+같은 서비스의 동일 플랫폼 실험과 iOS·Android·웹처럼 플랫폼이 다른 실험을 지원합니다.
+두 실험 모두 `manual_ui`여야 하며, 올바른 실행 계획, 계획 이후 바뀌지 않은 정의,
+검증을 통과한 기록이 필요합니다. 파일럿, 합성·관측 기록이 섞인 실험, 합성 실험과 관측
+실험의 조합은 거부합니다. 합성 실험끼리 비교하면 합성 데이터 경고를 표시합니다.
+
+과제 ID 전체와 각 과제의 프롬프트·채점 규칙·기준 답안이 같아야 합니다.
+조건 ID 전체와 각 조건의 기본 선택·메시지별 선택에 쓰인 선택지 ID 및 라벨도 같아야 합니다.
+반복 횟수, 과제와 조건의 나열 순서, 실험 메타데이터, 수집 기간은 달라도 됩니다.
+
+새 디렉터리에 정의 파일만 복사해 두 번째 실험을 시작하세요. 계획을 만들기 전에 플랫폼을
+변경한 뒤 해당 플랫폼에서 관측을 새로 수집합니다.
+
+```bash
+mkdir android-study
+cp ios-study/experiment.yaml android-study/experiment.yaml
+# 계획 생성 전에 android-study/experiment.yaml의 platform을 android로 수정합니다.
+mblab plan -s android-study
+mblab next -s android-study
+mblab record -s android-study
+# 계획된 실행의 기록을 계속한 뒤 비교합니다.
+mblab compare ios-study android-study
+mblab compare ios-study android-study --json
+```
+
+정확도와 과제 성공률은 실험별 분모로 계산합니다. 형식 실패는 정확도에서 오답으로 셉니다.
+미완료·거절·오류 응답은 과제 성공률에서 실패로 셉니다. 수동 채점 대기 응답과 프로토콜
+이탈은 두 비율에서 제외합니다. 채점된 과제 범위, 계획·기록 건수, 분석에 포함된 기록의
+클라이언트 버전별 건수와 UTC 수집 시각, 검증 경고 코드와 건수도 표시합니다.
+수집이 덜 끝났다면 이 정보와 비율을 함께 확인하세요.
+명령은 읽기 전용이며 기록과 비율은 실험별로 유지합니다. 수집 기간, 클라이언트 버전,
+계정, 사용량 제한도 비율에 영향을 줄 수 있어 차이를 플랫폼만의 효과로 해석할 수 없습니다.
+자세한 규칙은 [비교 방법론](methodology.md#cross-study-manual-ui-comparison)(영문)에 있습니다.
 
 ### 수동 채점의 평가자 간 일치도
 
@@ -481,12 +519,12 @@ Streamlit 사용 통계 전송은 끈 상태로 시작합니다. 화면 구성:
   (Benchmark 01, 예비 결과)
 - [x] 수동 채점의 평가자 간 일치도 — `mblab grade agreement`
 - [x] 사용자 요금표를 적용한 추론 수준별 비용 비교(API) — `mblab cost`
+- [x] iOS·Android·웹의 수동 UI 실험 간 비교 — `mblab compare`
 
 아직 구현되지 않았습니다. 데이터 모델이 실행 방식을 구분하고 있어 UI 실험을 바꾸지 않고
 추가할 수 있습니다.
 
 - [ ] Anthropic, Google API 실행기
-- [ ] 실험 간 비교: iOS vs Android vs 웹
 - [ ] 여러 사람의 재현 결과 모으기, GitHub Pages로 보고서 공개
 - [ ] 클라이언트·모델 버전 변화에 따른 동작 변화 감지
 - [ ] 문제 묶음과 벤치마크 데이터셋 플러그인

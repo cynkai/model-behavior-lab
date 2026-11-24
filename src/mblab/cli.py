@@ -37,6 +37,7 @@ from mblab.benchmark import (
     write_reports,
 )
 from mblab.clipboard import copy_text, paste_text
+from mblab.comparison import compare_studies
 from mblab.costs import estimate_costs
 from mblab.csvcells import to_cell
 from mblab.demo import DEMO_BANNER, create_demo_study
@@ -1159,6 +1160,93 @@ def analyze_cmd(
     )
     console.print(
         f"{len(a.limitations)} limitation(s) apply. Full write-up: mblab report -s {study}"
+    )
+
+
+def _comparison_rate(correct: int, denominator: int, rate: float | None) -> str:
+    return f"{correct}/{denominator} ({pct(rate)})" if denominator else "— (0/0)"
+
+
+def _load_comparison_study(path: Path, side: str) -> Study:
+    try:
+        return Study.load(path)
+    except (StudyError, OSError) as exc:
+        raise StudyError(f"{side} study could not be loaded. {exc}") from None
+
+
+@app.command("compare")
+@_errors
+def compare_cmd(
+    left: Annotated[Path, typer.Argument(help="First study directory.")],
+    right: Annotated[Path, typer.Argument(help="Second study directory.")],
+    json_output: Annotated[
+        bool, typer.Option("--json", help="Print the comparison as JSON.")
+    ] = False,
+) -> None:
+    """Compare two manual client studies with matching tasks and conditions."""
+    if left.resolve() == right.resolve():
+        raise StudyError("Provide two different study directories.")
+    result = compare_studies(
+        _load_comparison_study(left, "Left"), _load_comparison_study(right, "Right")
+    )
+    if json_output:
+        typer.echo(dump_json(result), nl=False)
+        return
+
+    console.print("Cross-study comparison", style="bold")
+    if result["synthetic_data"]:
+        console.print(DEMO_BANNER, style="bold red")
+    for side, summary in (("Left", result["left"]), ("Right", result["right"])):
+        platform = json.dumps(summary["platform"], ensure_ascii=False)
+        versions = (
+            ", ".join(
+                f"{json.dumps(version, ensure_ascii=False)} ({count})"
+                for version, count in summary["client_versions"].items()
+            )
+            or "—"
+        )
+        since = summary["first_recorded_at"]
+        until = summary["last_recorded_at"]
+        console.print(
+            f"{side} {summary['experiment_id']} v{summary['experiment_version']} on {platform}. "
+            f"{summary['recorded_runs']}/{summary['planned_runs']} runs recorded.",
+            markup=False,
+        )
+        console.print(
+            f"  Sent {f'{since} to {until}' if since else '—'}. Client versions {versions}.",
+            markup=False,
+        )
+        if summary["warnings"]:
+            warnings = ", ".join(f"{code} ({count})" for code, count in summary["warnings"].items())
+            console.print(
+                f"  Validation warnings {warnings}. See mblab validate for this study.",
+                markup=False,
+            )
+
+    table = Table(
+        "Condition", "Study", "Recorded / plan", "Accuracy", "Task success", "Tasks scored"
+    )
+    for condition in result["conditions"]:
+        for side, counts in (("Left", condition["left"]), ("Right", condition["right"])):
+            table.add_row(
+                condition["condition_id"],
+                side,
+                f"{counts['recorded_runs']}/{counts['planned_runs']}",
+                _comparison_rate(counts["correct_runs"], counts["scored_runs"], counts["accuracy"]),
+                _comparison_rate(
+                    counts["correct_runs"], counts["success_denominator"], counts["success_rate"]
+                ),
+                f"{counts['scored_tasks']}/{result['total_tasks']}",
+            )
+        table.add_section()
+    console.print(table)
+    console.print(
+        "Accuracy uses scored responses. Task success also counts errors, refusals and incomplete "
+        "responses. Pending manual grades and protocol deviations are excluded from both rates."
+    )
+    console.print(
+        "Each rate describes its recorded sample. Coverage, collection conditions and client "
+        "versions can differ between studies."
     )
 
 

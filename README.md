@@ -146,9 +146,9 @@ procedure — app settings, timing, what counts as a deviation — is in
 
 ## Commands
 
-Every study command takes `--study/-s DIR` (default: the current directory, or
-`$MBLAB_STUDY`); the `mblab benchmark` commands take the benchmark directory as an
-argument. `mblab <command> --help` lists all options.
+Most study commands take `--study/-s DIR`, defaulting to the current directory or
+`$MBLAB_STUDY`. `mblab compare` takes two study directories, and `mblab benchmark`
+takes a benchmark directory. `mblab <command> --help` lists all options.
 
 | Command | What it does |
 |---|---|
@@ -167,6 +167,7 @@ argument. `mblab <command> --help` lists all options.
 | `mblab grade export` / `mblab grade import SHEET` | Blind grading sheet without condition information, and importing the points |
 | `mblab grade agreement -s STUDY` | Per-task manual grading coverage, exact point agreement, and pass/fail agreement |
 | `mblab analyze [--json FILE]` | Score responses and summarise per condition, with uncertainty |
+| `mblab compare LEFT RIGHT [--json]` | Read-only comparison of two compatible manual UI studies. `--json` prints structured JSON to stdout |
 | `mblab export [--format csv\|json]` | One row per recorded run, with its score |
 | `mblab report` | Markdown report (`reports/report.md`); never replaces a report with different content unless `--force`, and `--check FILE` compares an existing report with a fresh one instead of writing |
 | `mblab dashboard` | Local web dashboard for a study or a benchmark directory (needs the `dashboard` extra) |
@@ -176,6 +177,47 @@ argument. `mblab <command> --help` lists all options.
 For CSV timestamps without a UTC offset, pass `--default-tz +09:00` or use a named zone
 such as `--default-tz Asia/Seoul`. If a clock change repeats or skips a local time in a
 named zone, check the recorded time and put the explicit UTC offset in that row.
+
+### Comparing two manual UI studies
+
+`mblab compare ios-study android-study` reads two different study directories and shows
+each study's results by condition.
+It supports the same service on the same platform or on different platforms, including
+iOS, Android, and web. Both studies must use `manual_ui` and have valid plans, unchanged
+definitions, and records that pass validation. Pilot studies, studies mixing synthetic
+and observed records, and a synthetic study paired with an observed study are rejected.
+Two synthetic studies carry a synthetic-data warning.
+
+Task IDs must match exactly, with identical prompts, scoring rules, and reference
+answers. Condition IDs must also match, with identical selected option IDs and labels
+for both the default and per-message selection. Repetition counts, task and condition
+ordering, experiment metadata, and collection periods can differ.
+
+Start the second study in a fresh directory by copying only its definition. Set the
+second platform before planning, then collect new observations in that platform.
+
+```bash
+mkdir android-study
+cp ios-study/experiment.yaml android-study/experiment.yaml
+# Edit android-study/experiment.yaml and set platform to android before planning.
+mblab plan -s android-study
+mblab next -s android-study
+mblab record -s android-study
+# Continue recording the planned runs, then compare.
+mblab compare ios-study android-study
+mblab compare ios-study android-study --json
+```
+
+Each study keeps its own accuracy and task success denominators. Format failures count
+as incorrect in accuracy. Incomplete, refused, and error responses count as failures in
+task success. Responses awaiting manual grading and protocol deviations are excluded
+from both rates. The output includes scored task coverage, planned and recorded counts,
+client-version counts and collection timestamps in UTC for included records, and
+validation warning codes with counts. Review these alongside the rates, especially when
+collection is incomplete. The command is read-only. Records and rates remain separate
+for each study. Collection period, client version, account, and usage limits can affect
+the rates and prevent attributing a difference to the platform alone. See the
+[comparison methodology](docs/methodology.md#cross-study-manual-ui-comparison).
 
 ### Manual grading agreement
 
@@ -537,12 +579,12 @@ The *Result submission* issue templates list what to include.
   `mblab benchmark` (Benchmark 01, preliminary)
 - [x] Inter-rater agreement for manual grading — `mblab grade agreement`
 - [x] Cost per reasoning-effort level (API) with a supplied rate card — `mblab cost`
+- [x] Cross-study manual UI comparison across iOS, Android, and web — `mblab compare`
 
 Not implemented yet; the data model separates execution methods so these can be added
 without changing UI experiments:
 
 - [ ] Anthropic and Google API runners
-- [ ] Cross-study comparison: iOS vs. Android vs. web
 - [ ] Aggregating independent replications; publishing reports on GitHub Pages
 - [ ] Detecting behaviour changes across client or model versions over time
 - [ ] Task packs and benchmark-dataset plugins

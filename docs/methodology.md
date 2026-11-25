@@ -230,6 +230,48 @@ separately. Missing runs are reported as missing, never imputed.
   Pairwise differences are descriptive, not significance tests; with many comparisons
   some intervals exclude 0 by chance.
 
+### Cross-study manual UI comparison
+
+`mblab compare LEFT RIGHT [--json]` reads two different study directories and displays separate
+condition summaries. `--json` prints structured JSON to stdout. The command writes no
+files and makes no service requests.
+
+Both definitions must use `manual_ui` for the same service. The platforms may match or
+differ. Both studies need valid plans, definitions unchanged since planning, and records
+that pass validation. Pilot studies are rejected. Mixed synthetic and observed records
+within a study are rejected, as is a synthetic study paired with an observed study.
+Two synthetic studies can be compared with a synthetic-data warning.
+
+Compatibility requires the exact same task ID set and, for each task, the same prompt,
+scoring rule, and reference answer. It also requires the exact same condition ID set
+and, for each condition, the same default and per-message selection option IDs and
+their labels. A missing per-message selection must match a missing selection.
+Task and condition ordering, repetition counts, experiment metadata, and collection
+periods may differ. Compatibility does not establish that the service's hidden routing
+or deployed model stayed constant.
+
+Each condition retains two independent summaries, one per study. Accuracy is correct
+responses divided by scored completed responses, including format failures as incorrect.
+Task success is correct responses divided by included recorded runs with an outcome,
+including incomplete, refused, and error responses as failures. Completed responses
+awaiting manual grading are excluded from both denominators. Protocol deviations are
+also excluded from both rates. Unrecorded runs contribute to planned counts only.
+Scored task coverage shows how many tasks contribute to accuracy, alongside the planned
+and recorded counts. JSON also includes scored run counts for each task. Client-version
+counts and collection timestamps in UTC use included records. Validation warnings are shown as codes
+with counts. These details provide context for differences in coverage and collection
+conditions.
+
+These are descriptive summaries of separate studies, with records and rates kept
+separate for each sample. Task coverage, collection period, client version, account,
+usage limits, and other confounders can vary and affect the rates even with matching
+definitions. Those factors prevent attributing a difference to the platform alone.
+Server-side model identity remains unobservable in a manual UI study.
+
+To collect another platform, create a new directory and copy only `experiment.yaml`.
+Change `platform` before running `mblab plan`, then collect fresh observations there.
+Keep the original study's plan, records, and grades in their original directory.
+
 ## 9. Per-message selection vs. default: the decision table
 
 For a test condition with default *X* and per-message selection *Y*, the reference

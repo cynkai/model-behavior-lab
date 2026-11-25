@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+### Cross-study manual UI comparison
+
+- `mblab compare LEFT RIGHT [--json]` compares two compatible `manual_ui` studies in different directories for
+  the same service, on matching or different platforms. It writes no files, and
+  `--json` prints structured JSON to stdout.
+- Matching requires identical task IDs, prompts, scoring rules, and reference answers,
+  plus identical condition IDs and selected default/per-message option IDs and labels.
+  Repetition counts, definition ordering, experiment metadata, and collection periods
+  may differ. Both studies need valid plans, stable definitions, and validated records.
+- Pilot studies, mixed synthetic and observed data, and synthetic-versus-observed
+  comparisons are rejected. Two synthetic studies carry a synthetic-data warning.
+- Each study retains its own per-condition accuracy and task success denominators.
+  Format failures count as incorrect in accuracy. Incomplete, refused, and error
+  responses count as failures in task success. Pending manual grades and protocol
+  deviations are excluded. Scored task coverage, planned/recorded counts, client-version
+  counts and collection timestamps in UTC for included records, and validation warning
+  codes with counts accompany the rates. Records and rates stay separate for each study.
+  Collection period, client version, account, and usage limits can affect the rates and
+  prevent attributing a difference to the platform alone.
+
 ### API token cost estimates
 
 - `mblab cost -s STUDY --rates rates.json [--json]` estimates official-API token costs
